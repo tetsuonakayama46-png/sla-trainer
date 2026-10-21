@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0f1a">
+<title>SLA Trainer</title>
+<link rel="manifest" href='data:application/manifest+json,{"name":"SLA Trainer","short_name":"SLA","display":"standalone","start_url":".","background_color":"%230b0f1a","theme_color":"%230b0f1a"}'>
+<style>
+  /* 1画面・1タップのトレーナー。ダーク固定（没入のため） */
+  :root {
+    --bg:#0b0f1a; --panel:#131a2a; --line:#243049; --fg:#eef2f8; --muted:#8b97b1;
+    --accent:#6c7cff; --good:#4ade80; --warn:#fbbf24; --bad:#f87171; --native:#60a5fa;
+    --display:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box} html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--display);-webkit-tap-highlight-color:transparent;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+  #app{height:100%;display:flex;flex-direction:column;touch-action:manipulation}
+  .gauge{height:5px;background:var(--line)} .gauge>i{display:block;height:100%;background:var(--accent);transition:width 1s linear}
+  .hdr{display:flex;justify-content:space-between;padding:8px max(16px,env(safe-area-inset-left)) 6px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .hdr .combo{color:var(--warn);font-weight:700}
+  .scene{position:relative;aspect-ratio:16/9;max-height:30dvh;background:var(--panel);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+  .scene .tap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.55);color:var(--fg);gap:6px}
+  .scene .tap b{font-size:40px;line-height:1}
+  .body{flex:1;display:flex;flex-direction:column;justify-content:center;padding:16px max(16px,env(safe-area-inset-left));gap:14px}
+  .text{font-size:clamp(22px,6.5vw,32px);font-weight:700;line-height:1.3;text-align:center;letter-spacing:-.01em;text-wrap:balance}
+  .text span{display:inline-block;margin:0 .18em;transition:color .3s}
+  .text .g{color:var(--good)} .text .y{color:var(--warn)} .text .r{color:var(--bad)}
+  .status{text-align:center;font-size:14px;color:var(--muted);min-height:20px}
+  .status.rec{color:var(--good);font-weight:600;animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.4}}
+  .wave{padding:0 max(16px,env(safe-area-inset-left)) max(20px,env(safe-area-inset-bottom))}
+  .wave .lbl{display:flex;justify-content:space-between;font-size:10px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+  .wave .lbl b{color:var(--native)} .wave .lbl i{color:var(--good);font-style:normal}
+  canvas{width:100%;height:110px;display:block;background:rgba(0,0,0,.35);border-radius:10px}
+  .overlay{position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.5);pointer-events:none}
+  .overlay.flash{background:rgba(74,222,128,.22)}
+  .overlay .n{font-size:min(36vw,150px);font-weight:900;line-height:1;text-shadow:0 0 30px rgba(0,0,0,.7);animation:pop .3s ease-out}
+  .overlay .sub{margin-top:8px;display:flex;gap:14px;font-size:13px;color:#cbd5e1}
+  .overlay .combo{margin-top:14px;font-size:30px;font-weight:800;color:var(--warn);animation:pop .3s ease-out}
+  .overlay .stage{margin-top:8px;padding:4px 12px;border-radius:999px;background:var(--accent);font-size:13px;font-weight:600}
+  @keyframes pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.1);opacity:1}100%{transform:scale(1)}}
+  .center{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px max(16px,env(safe-area-inset-left));gap:10px}
+  .center h1{font-size:22px;margin:0} .center p{color:var(--muted);font-size:14px;max-width:320px;margin:0;line-height:1.6}
+  .btn{margin-top:14px;padding:16px 32px;border:0;border-radius:16px;background:var(--accent);color:#fff;font-size:18px;font-weight:600;font-family:inherit}
+  .btn:active{transform:scale(.96)} .btn.ghost{background:var(--panel);color:var(--fg);font-size:15px;padding:12px 22px}
+  .big{font-size:64px;font-weight:900;color:var(--good)}
+  .err{color:var(--bad);font-weight:600}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ==================== データ（デモ6チャンク） ====================
+const CHUNKS = [
+  {id:"c1", text:"I was gonna say the same thing.", core:"gonna say",
+   t:[["I",0,.12],["was",.12,.28],["gonna",.28,.5],["say",.5,.72],["the",.72,.82],["same",.82,1.1],["thing",1.1,1.5]]},
+  {id:"c2", text:"Do you want it now or later?", core:"want it",
+   t:[["Do",0,.12],["you",.12,.25],["want",.25,.48],["it",.48,.58],["now",.58,.85],["or",.85,.98],["later",.98,1.4]]},
+  {id:"c3", text:"Let me know what you think.", core:"let me know",
+   t:[["Let",0,.18],["me",.18,.3],["know",.3,.55],["what",.55,.72],["you",.72,.85],["think",.85,1.25]]},
+  {id:"c4", text:"That's kind of a big deal.", core:"kind of",
+   t:[["That's",0,.25],["kind",.25,.45],["of",.45,.55],["a",.55,.62],["big",.62,.85],["deal",.85,1.2]]},
+  {id:"c5", text:"I'll get back to you on that.", core:"get back to you",
+   t:[["I'll",0,.18],["get",.18,.35],["back",.35,.6],["to",.6,.7],["you",.7,.85],["on",.85,.98],["that",.98,1.3]]},
+  {id:"c6", text:"You've gotta be kidding me.", core:"gotta be",
+   t:[["You've",0,.22],["gotta",.22,.45],["be",.45,.58],["kidding",.58,.95],["me",.95,1.2]]},
+];
+const SESSION_SEC = 300, SILENCE_MS = 700, VAD_TH = 0.02;
+
+// ==================== 永続化（この端末のみ） ====================
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v==null? d : JSON.parse(v);} catch { return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+let progress = store.get("progress", {});   // id -> {stage, fail, hist:[overall...]}
+let streak = store.get("streak", {days:0, last:null});
+function prog(id){ return progress[id] ??= {stage:3, fail:0, hist:[]}; }
+
+// ==================== 採点（デモ: 発話長と音量から。音声認識なし） ====================
+function hash(arr){ let h=2166136261; for (let i=0;i<Math.min(arr.length,4000);i++){ h^=(arr[i]*1e4)|0; h=Math.imul(h,16777619);} return h>>>0; }
+function scoreDemo(samples, sr, ch){
+  const dur = samples.length/sr;
+  let s=0; for (const v of samples) s+=v*v; const rms = Math.sqrt(s/Math.max(1,samples.length));
+  const refDur = ch.t.at(-1)[2]-ch.t[0][1];
+  let base;
+  if (dur<0.3 || rms<0.005) base = 20;
+  else { const ratio = Math.min(dur, refDur*2.5)/refDur; base = 92 - Math.min(40, Math.abs(ratio-1.1)*45) - (rms>0.02?0:15); }
+  base = Math.max(10, Math.min(98, base));
+  const h = hash(samples);
+  const words = ch.t.map((w,i)=>{ const j=((h>>(i*3))%23)-11; return {word:w[0], acc:Math.max(0,Math.min(100,base+j))}; });
+  const wa = words.reduce((a,w)=>a+w.acc,0)/words.length;
+  const timing = Math.min(400, Math.abs(dur-refDur)/Math.max(refDur,.1)*150);
+  const prosody = Math.max(30, Math.min(95, base+3));
+  const overall = 0.6*wa + 0.25*prosody + 0.15*(100-Math.min(timing,300)/3);
+  return {overall:Math.round(overall), wa, prosody:Math.round(prosody), timing:Math.round(timing), words};
+}
+// 10段階判定（簡略: 直近3回 overall>=85 で昇段、<60 が2連続で降段）
+function step(p, overall){
+  p.hist = [overall, ...p.hist].slice(0,3);
+  const before = p.stage;
+  if (overall<60){ p.fail++; if (p.fail>=2 && p.stage>1){ p.stage--; p.fail=0; } }
+  else { p.fail=0; if (p.hist.length===3 && p.hist.every(v=>v>=85) && p.stage<10){ p.stage++; p.hist=[]; } }
+  return {before, after:p.stage};
+}
+
+// ==================== 音 ====================
+let actx=null, stream=null;
+function tone(f, d=0.15){ try{ const o=actx.createOscillator(), g=actx.createGain(); o.frequency.value=f; g.gain.setValueAtTime(.0001,actx.currentTime); g.gain.exponentialRampToValueAtTime(.3,actx.currentTime+.01); g.gain.exponentialRampToValueAtTime(.0001,actx.currentTime+d); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime+d);}catch{} }
+function pickVoice(){
+  const vs = speechSynthesis.getVoices();
+  return vs.find(v=>/en[-_]US/i.test(v.lang)&&/natural|neural|premium|enhanced|samantha|aria|zira|google us/i.test(v.name))
+      || vs.find(v=>/en[-_]US/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || null;
+}
+function speak(text){ return new Promise(res=>{
+  const u = new SpeechSynthesisUtterance(text); u.lang="en-US"; u.rate=.95; const v=pickVoice(); if(v) u.voice=v;
+  let done=false; const fin=()=>{ if(!done){done=true;res();} };
+  u.onend=fin; u.onerror=fin; speechSynthesis.cancel(); speechSynthesis.speak(u);
+  setTimeout(fin, 1500 + text.length*90);   // 一部端末で onend が来ない対策
+});}
+
+// ==================== 状態 ====================
+const S = { phase:"init", idx:0, order:[], combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"" };
+let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, chunks=[], t0=0, speechStart=null;
+
+function el(h){ const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstElementChild; }
+const app = document.getElementById("app");
+function esc(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function render(){
+  const ch = CHUNKS[S.order[S.idx]];
+  if (S.phase==="init"){
+    app.replaceChildren(el(`<div class="center"><p>準備中…</p></div>`)); return;
+  }
+  if (S.phase==="permission"){
+    app.replaceChildren(el(`<div class="center">
+      <div style="font-size:48px">🎙️</div><h1>マイクと音声を有効にする</h1>
+      <p>初回のみ必要です。次回からは開くだけで学習が始まります。</p>
+      <button class="btn" id="perm">有効にする</button>${S.err?`<p class="err">${esc(S.err)}</p>`:""}</div>`));
+    document.getElementById("perm").onclick = requestPermission; return;
+  }
+  if (S.phase==="finished"){
+    app.replaceChildren(el(`<div class="center"><div class="big">DONE</div>
+      <p>最大コンボ ${S.comboMax}<br>連続 ${streak.days} 日目</p>
+      <button class="btn ghost" id="again">もう一度</button></div>`));
+    document.getElementById("again").onclick = ()=>{ startSession(); }; return;
+  }
+  if (S.phase==="error"){
+    app.replaceChildren(el(`<div class="center"><p class="err">${esc(S.err)}</p><button class="btn ghost" id="re">再読み込み</button></div>`));
+    document.getElementById("re").onclick=()=>location.reload(); return;
+  }
+  const label = {ready:"画面をタップして開始", playing:"聞いて…", recording:"話して！", scoring:"採点中…", result:""}[S.phase] ?? "";
+  const words = ch.text.split(/\s+/).map((w,i)=>{
+    let cls=""; if (S.detail){ const a=S.detail[i]?.acc ?? 100; cls = a>=80?"g":a>=60?"y":"r"; }
+    return `<span class="${cls}">${esc(w)}</span>`; }).join("");
+  app.replaceChildren(el(`<div style="display:contents">
+    <div class="gauge"><i style="width:${S.remain/SESSION_SEC*100}%"></i></div>
+    <div class="hdr"><span>${S.idx+1} / ${S.order.length}</span><span>Stage ${prog(ch.id).stage}</span><span class="combo">${S.combo>0?S.combo+"x":""}</span></div>
+    <div class="scene">no frame${S.phase==="ready"?`<div class="tap"><b>▶</b><span>${label}</span></div>`:""}</div>
+    <div class="body"><p class="text">${words}</p><div class="status ${S.phase==="recording"?"rec":""}">${label}</div></div>
+    <div class="wave"><div class="lbl"><b>Native</b><i>You</i></div><canvas id="cv"></canvas></div>
+    ${S.phase==="result"&&S.result?overlayHtml():""}
+  </div>`));
+  drawWave();
+}
+function overlayHtml(){
+  const r=S.result, c = r.overall>=80?"var(--good)":r.overall>=60?"var(--warn)":"var(--bad)";
+  return `<div class="overlay ${r.overall>=80?"flash":""}"><div class="n" style="color:${c}">${r.overall}</div>
+    <div class="sub"><span>Prosody ${r.prosody}</span><span>Timing ±${r.timing}ms</span><span style="color:var(--warn)">デモ採点</span></div>
+    ${S.combo>=2?`<div class="combo">${S.combo} COMBO!</div>`:""}
+    ${r.stageAfter>r.stageBefore?`<div class="stage">Stage ${r.stageBefore} → ${r.stageAfter}</div>`:""}</div>`;
+}
+function drawWave(){
+  const cv=document.getElementById("cv"); if(!cv) return;
+  const dpr=devicePixelRatio||1, w=cv.clientWidth, h=110; cv.width=w*dpr; cv.height=h*dpr;
+  const g=cv.getContext("2d"); g.scale(dpr,dpr); g.clearRect(0,0,w,h);
+  const n=Math.max(S.refWave.length,S.userWave.length,1), bw=w/n, mid=h/2;
+  const norm=a=>{const m=Math.max(...a,.0001);return a.map(v=>v/m);};
+  g.strokeStyle="rgba(148,163,184,.4)"; g.beginPath(); g.moveTo(0,mid); g.lineTo(w,mid); g.stroke();
+  g.fillStyle="rgba(96,165,250,.85)"; norm(S.refWave).forEach((v,i)=>{const hh=v*(mid-4); g.fillRect(i*bw,mid-hh,Math.max(1,bw-1),hh);});
+  g.fillStyle="rgba(74,222,128,.9)";  norm(S.userWave).forEach((v,i)=>{const hh=v*(mid-4); g.fillRect(i*bw,mid,Math.max(1,bw-1),hh);});
+  if (S.phase==="recording"){ g.fillStyle="rgba(250,204,21,.9)"; g.fillRect(w-6,mid,6,Math.min(1,S.level*6)*(mid-4)); }
+}
+
+// ==================== フロー ====================
+async function requestPermission(){
+  try{
+    const AC = window.AudioContext||window.webkitAudioContext; actx = new AC(); await actx.resume();
+    stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    store.set("mic",1); speechSynthesis.getVoices();
+    startSession();
+  }catch(e){ S.err="マイクの許可が必要です: "+e.message; render(); }
+}
+function startSession(){
+  S.order = CHUNKS.map((_,i)=>i).sort(()=>Math.random()-.5); S.idx=0; S.combo=0; S.comboMax=0; S.remain=SESSION_SEC; S.detail=null; S.result=null; S.userWave=[];
+  const today = new Date().toISOString().slice(0,10);
+  if (streak.last!==today){ const y=new Date(Date.now()-864e5).toISOString().slice(0,10); streak={days: streak.last===y? streak.days+1 : 1, last:today}; store.set("streak",streak); }
+  S.phase="ready"; render();
+  app.onpointerdown = onFirstTap;
+}
+async function onFirstTap(){
+  if (S.phase!=="ready") return; app.onpointerdown=null;
+  try{
+    const AC = window.AudioContext||window.webkitAudioContext; actx ??= new AC(); await actx.resume();
+    stream ??= await navigator.mediaDevices.getUserMedia({audio:true});
+    tone(523,.08);
+    clearInterval(timer); timer=setInterval(()=>{ S.remain--; if(S.remain<=0){ finishSession(); } else { const g=document.querySelector(".gauge>i"); if(g) g.style.width=S.remain/SESSION_SEC*100+"%"; } },1000);
+    await playRef();
+  }catch(e){ S.phase="error"; S.err="初期化に失敗: "+e.message; render(); }
+}
+async function playRef(){
+  const ch = CHUNKS[S.order[S.idx]];
+  S.phase="playing"; S.result=null; S.detail=null; S.userWave=[];
+  const end=ch.t.at(-1)[2]; S.refWave = Array.from({length:Math.ceil(end/.05)},(_,i)=>{const t=i*.05; return ch.t.some(w=>t>=w[1]&&t<w[2]) ? .5+.4*Math.abs(Math.sin(i*1.7)) : .05;});
+  render();
+  await speak(ch.text);
+  startRecording();
+}
+function startRecording(){
+  const ch = CHUNKS[S.order[S.idx]];
+  t0=performance.now(); speechStart=null; S.userWave=[]; S.phase="recording"; render();
+  // 録音（ScriptProcessor: iOS Safari 互換）
+  const chunksArr=[]; src=actx.createMediaStreamSource(stream); proc=actx.createScriptProcessor(4096,1,1);
+  proc.onaudioprocess=e=>chunksArr.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  src.connect(proc); proc.connect(actx.destination);
+  // VAD
+  const an=actx.createAnalyser(); an.fftSize=1024; src.connect(an); const buf=new Float32Array(an.fftSize);
+  const refMs=(ch.t.at(-1)[2]-ch.t[0][1])*1000, maxMs=Math.min(15000, refMs*2.5+2000);
+  let speaking=false, lastVoice=0, ended=false;
+  const finish=()=>{ if(ended) return; ended=true; clearInterval(vadTimer); clearInterval(waveTimer);
+    try{proc.disconnect(); src.disconnect(); an.disconnect();}catch{}
+    const total=chunksArr.reduce((a,c)=>a+c.length,0), merged=new Float32Array(total); let o=0; for(const c of chunksArr){merged.set(c,o);o+=c.length;}
+    onRecorded(merged, actx.sampleRate); };
+  vadTimer=setInterval(()=>{ an.getFloatTimeDomainData(buf); let s=0; for(const v of buf) s+=v*v; const rms=Math.sqrt(s/buf.length); S.level=rms; const now=performance.now();
+    if (rms>=VAD_TH){ if(!speaking){speaking=true; speechStart=now;} lastVoice=now; }
+    else if (speaking && now-lastVoice>=SILENCE_MS){ finish(); return; }
+    if (now-t0>=maxMs) finish(); },20);
+  waveTimer=setInterval(()=>{ S.userWave.push(S.level); drawWave(); },50);
+}
+function onRecorded(samples, sr){
+  const ch = CHUNKS[S.order[S.idx]];
+  S.phase="scoring"; render();
+  const r = scoreDemo(samples, sr, ch);
+  const st = step(prog(ch.id), r.overall); store.set("progress",progress);
+  r.stageBefore=st.before; r.stageAfter=st.after; r.reaction = speechStart? Math.round(speechStart-t0) : null;
+  S.result=r; S.detail=r.words;
+  S.combo = r.overall>=80 ? S.combo+1 : 0; S.comboMax=Math.max(S.comboMax,S.combo);
+  tone(r.overall>=90?880:r.overall>=80?660:330, r.overall>=80?.15:.08);
+  S.phase="result"; render();
+  setTimeout(next, 1000);
+}
+async function next(){
+  if (S.idx+1>=S.order.length){ finishSession(); return; }
+  S.idx++; await playRef();
+}
+function finishSession(){ clearInterval(timer); clearInterval(vadTimer); clearInterval(waveTimer); speechSynthesis.cancel(); S.phase="finished"; render(); }
+
+// ==================== 起動 ====================
+(function boot(){
+  if (!navigator.mediaDevices?.getUserMedia){ S.phase="error"; S.err="このブラウザはマイクに対応していません。Safari または Chrome で https のURLから開いてください。"; render(); return; }
+  // iOS は getUserMedia にユーザー操作が必須のため、許可済みでも「有効にする」ボタン1回から始める
+  S.phase="permission"; render();
+  speechSynthesis.onvoiceschanged = ()=>speechSynthesis.getVoices();
+})();
+</script>
+</body>
+</html>
