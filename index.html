@@ -7,7 +7,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0b0f1a">
 <title>SLA Trainer</title>
-<link rel="manifest" href='data:application/manifest+json,{"name":"SLA Trainer","short_name":"SLA","display":"standalone","start_url":".","background_color":"%230b0f1a","theme_color":"%230b0f1a"}'>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-180.png">
 <style>
   /* 1画面・1タップのトレーナー。ダーク固定（没入のため） */
   :root {
@@ -231,12 +233,16 @@ function startRecording(){
   const an=actx.createAnalyser(); an.fftSize=1024; src.connect(an); const buf=new Float32Array(an.fftSize);
   const refMs=(ch.t.at(-1)[2]-ch.t[0][1])*1000, maxMs=Math.min(15000, refMs*2.5+2000);
   let speaking=false, lastVoice=0, ended=false;
+  // 電車内などの騒音対策: 録音開始から300msの環境音RMSを測り、閾値を環境音の2.5倍（下限 VAD_TH）に自動調整
+  let th=VAD_TH, calN=0, calSum=0; const CAL_MS=300;
   const finish=()=>{ if(ended) return; ended=true; clearInterval(vadTimer); clearInterval(waveTimer);
     try{proc.disconnect(); src.disconnect(); an.disconnect();}catch{}
     const total=chunksArr.reduce((a,c)=>a+c.length,0), merged=new Float32Array(total); let o=0; for(const c of chunksArr){merged.set(c,o);o+=c.length;}
     onRecorded(merged, actx.sampleRate); };
   vadTimer=setInterval(()=>{ an.getFloatTimeDomainData(buf); let s=0; for(const v of buf) s+=v*v; const rms=Math.sqrt(s/buf.length); S.level=rms; const now=performance.now();
-    if (rms>=VAD_TH){ if(!speaking){speaking=true; speechStart=now;} lastVoice=now; }
+    if (now-t0<CAL_MS){ calN++; calSum+=rms; return; }
+    if (calN && th===VAD_TH){ th=Math.max(VAD_TH, (calSum/calN)*2.5); calN=0; }
+    if (rms>=th){ if(!speaking){speaking=true; speechStart=now;} lastVoice=now; }
     else if (speaking && now-lastVoice>=SILENCE_MS){ finish(); return; }
     if (now-t0>=maxMs) finish(); },20);
   waveTimer=setInterval(()=>{ S.userWave.push(S.level); drawWave(); },50);
