@@ -66,9 +66,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.2"></script>
+<script src="curriculum.js?v=2026.11.15.3"></script>
 <script>
-const APP_VERSION = "2026.11.15.2";
+const APP_VERSION = "2026.11.15.3";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -116,6 +116,44 @@ function planToday(week){
 }
 function overallProgress(){ const done=ITEMS.filter(i=>prog(i.id).step>=5).length, mid=ITEMS.filter(i=>prog(i.id).step>=3).length; return {done, mid, total:ITEMS.length}; }
 
+
+// ==================== 実採点（音声認識: OpenAI transcription。鍵はこの端末のみに保存） ====================
+const ASR_MODEL = "gpt-4o-mini-transcribe";      // $0.003/分。失敗時は whisper-1 に自動で切替
+function getKey(){ return store.get("openai_key", ""); }
+function encodeWav16k(samples, sr){
+  const ratio = sr/16000, n = Math.floor(samples.length/ratio), out = new Int16Array(n);
+  for (let i=0;i<n;i++){ const a=Math.floor(i*ratio), b=Math.min(samples.length, Math.floor((i+1)*ratio)); let sum=0,c=0; for(let j=a;j<b;j++){sum+=samples[j];c++;} const v=Math.max(-1,Math.min(1,c?sum/c:0)); out[i]=v<0?v*0x8000:v*0x7fff; }
+  const buf=new ArrayBuffer(44+out.length*2), dv=new DataView(buf); const W=(o,str)=>{for(let i=0;i<str.length;i++)dv.setUint8(o+i,str.charCodeAt(i));};
+  W(0,"RIFF"); dv.setUint32(4,36+out.length*2,true); W(8,"WAVE"); W(12,"fmt "); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+  dv.setUint32(24,16000,true); dv.setUint32(28,32000,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true); W(36,"data"); dv.setUint32(40,out.length*2,true);
+  new Int16Array(buf,44).set(out); return new Blob([buf],{type:"audio/wav"});
+}
+async function transcribe(blob, hint){
+  const key=getKey(); if(!key) throw new Error("no_key");
+  const call=async(model)=>{ const fd=new FormData(); fd.append("file",blob,"a.wav"); fd.append("model",model); fd.append("language","en"); fd.append("prompt",hint); fd.append("response_format","json");
+    const ctrl=new AbortController(); const tm=setTimeout(()=>ctrl.abort(),12000);
+    const r=await fetch("https://api.openai.com/v1/audio/transcriptions",{method:"POST",headers:{Authorization:"Bearer "+key},body:fd,signal:ctrl.signal}); clearTimeout(tm);
+    if(!r.ok){ const t=await r.text(); throw new Error(r.status+" "+t.slice(0,120)); } return (await r.json()).text||""; };
+  try { return await call(ASR_MODEL); } catch(e){ if(/40[04]/.test(e.message)) return await call("whisper-1"); throw e; }
+}
+const norm = s => s.toLowerCase().replace(/[’‘]/g,"'").replace(/[^a-z0-9' ]+/g," ").replace(/\s+/g," ").trim();
+function lcsAlign(ref, hyp){ // 単語単位の最長共通部分列 → 参照側の各単語が言えたか
+  const n=ref.length,m=hyp.length, dp=Array.from({length:n+1},()=>new Array(m+1).fill(0));
+  for(let i=n-1;i>=0;i--) for(let j=m-1;j>=0;j--) dp[i][j]= ref[i]===hyp[j]? dp[i+1][j+1]+1 : Math.max(dp[i+1][j],dp[i][j+1]);
+  const hit=new Array(n).fill(false); let i=0,j=0; while(i<n&&j<m){ if(ref[i]===hyp[j]){hit[i]=true;i++;j++;} else if(dp[i+1][j]>=dp[i][j+1]) i++; else j++; }
+  return hit;
+}
+function scoreReal(text, en, t, samples, sr){
+  const ref=norm(en).split(" ").filter(Boolean), hyp=norm(text).split(" ").filter(Boolean), hit=lcsAlign(ref,hyp);
+  const words=t.map((w,i)=>({word:w[0], acc: hit[i]?100:0}));
+  const wa=ref.length? hit.filter(Boolean).length/ref.length*100 : 0;
+  const dur=samples.length/sr, refDur=t.at(-1)[2]-t[0][1];
+  const timing=Math.min(400, Math.abs(dur-refDur)/Math.max(refDur,.1)*150);
+  const extra=Math.max(0,hyp.length-ref.length);                       // 余計な語
+  const overall=Math.round(Math.max(0, 0.85*wa + 0.15*(100-Math.min(timing,300)/3) - extra*5));
+  return {overall, wa:Math.round(wa), prosody:null, timing:Math.round(timing), words, heard:text, engine:"asr"};
+}
+
 // ==================== 採点（デモ: 発話長と音量から。音声認識なし） ====================
 function hash(arr){ let h=2166136261; for (let i=0;i<Math.min(arr.length,4000);i++){ h^=(arr[i]*1e4)|0; h=Math.imul(h,16777619);} return h>>>0; }
 function scoreDemo(samples, sr, t){
@@ -161,7 +199,7 @@ function speak(text, rate=1){ return new Promise(res=>{
 });}
 
 // ==================== 状態 ====================
-const S = { phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
+const S = { asrErr:"", phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
 let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, t0=0, speechStart=null;
 const cur = ()=>S.list[S.idx];
 
@@ -190,9 +228,32 @@ function render(){
       <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
       <button class="btn" id="go">はじめる（約5分）</button>
       <div class="small">ステップ: 意味＋ゆっくり → いっしょに → ひとりで → 見ないで → 状況で即答</div>
-      <div class="small">v${APP_VERSION}</div>
+      <div class="small">採点: ${getKey()?"音声認識":"デモ（<a id=\"openset\" style=\"color:var(--native)\">設定でキーを入れる</a>）"} ・ v${APP_VERSION} ・ <a id="openset2" style="color:var(--muted);text-decoration:underline">設定</a></div>
     </div>`));
-    document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; }; return;
+    document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; };
+    for (const id of ["openset","openset2"]){ const a=document.getElementById(id); if(a) a.onclick=()=>{ S.phase="settings"; render(); }; }
+    return;
+  }
+  if (S.phase==="settings"){
+    const k=getKey();
+    app.replaceChildren(el(`<div class="menu">
+      <div class="wk">設定</div><h1>音声認識で採点する</h1>
+      <p class="goal">OpenAI の API キー（sk-…）を貼ると、言えた単語を実際に判定します。キーは<b>この端末の中だけ</b>に保存され、どこにも送信されません（OpenAI への採点リクエスト以外）。費用は1日5分で約¥5。</p>
+      <input id="key" type="password" placeholder="sk-..." value="${esc(k)}" autocomplete="off" style="width:100%;padding:14px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--fg);font-size:16px">
+      <div class="small" id="keymsg">${k?"保存済み（音声認識モード）":"未設定（デモ採点モード）"}</div>
+      <button class="btn" id="savekey">保存して確認</button>
+      <button class="btn ghost" id="clearkey">キーを削除（デモ採点に戻す）</button>
+      <button class="btn ghost" id="back">戻る</button>
+    </div>`));
+    document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
+    document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
+    document.getElementById("savekey").onclick=async()=>{
+      const v=document.getElementById("key").value.trim(); const msg=document.getElementById("keymsg");
+      if(!/^sk-/.test(v)){ msg.textContent="sk- で始まるキーを貼ってください"; return; }
+      store.set("openai_key",v); msg.textContent="確認中…";
+      try{ const r=await fetch("https://api.openai.com/v1/models/whisper-1",{headers:{Authorization:"Bearer "+v}}); msg.textContent = r.ok? "OK: 音声認識モードになりました" : "エラー "+r.status+"（キーの権限・残高を確認）"; }
+      catch(e){ msg.textContent="接続できません: "+e.message; }
+    }; return;
   }
   if (S.phase==="finished"){
     const op=overallProgress();
@@ -227,7 +288,8 @@ function render(){
 function overlayHtml(){
   const r=S.result, c = r.ok?"var(--good)":"var(--bad)";
   return `<div class="overlay ${r.ok?"flash":""}"><div class="n" style="color:${c}">${r.overall}</div>
-    <div class="sub"><span>${r.ok?"合格":"もう一回"}</span><span>Timing ±${r.timing}ms</span>${r.reaction!=null?`<span>反応 ${(r.reaction/1000).toFixed(1)}s</span>`:""}<span style="color:var(--warn)">デモ採点</span></div>
+    <div class="sub"><span>${r.ok?"合格":"もう一回"}</span><span>Timing ±${r.timing}ms</span>${r.reaction!=null?`<span>反応 ${(r.reaction/1000).toFixed(1)}s</span>`:""}<span style="color:${r.engine==="asr"?"var(--good)":"var(--warn)"}">${r.engine==="asr"?"音声認識":"デモ採点"}</span></div>
+    ${r.engine==="asr"?`<div class="sub" style="font-size:15px;color:#fff">聞こえた: ${esc(r.heard||"（無音）")}</div>`:""}
     ${S.combo>=2?`<div class="combo">${S.combo} COMBO!</div>`:""}
     ${r.stepAfter>r.stepBefore?`<div class="stage">Step ${r.stepBefore} → ${r.stepAfter} ${esc(STEPS[r.stepAfter-1].name)}</div>`:r.stepAfter<r.stepBefore?`<div class="stage" style="background:var(--bad)">Step ${r.stepBefore} → ${r.stepAfter} に戻ってやり直し</div>`:""}</div>`;
 }
@@ -303,7 +365,12 @@ function startRecording(){
 async function onRecorded(samples, sr){
   const ch = cur(), st = stepOf(ch.id);
   S.phase="scoring"; render();
-  const r = scoreDemo(samples, sr, S.t);
+  let r=null;
+  if (getKey()){
+    try{ const text = await transcribe(encodeWav16k(samples, sr), ch.en); r = scoreReal(text, ch.en, S.t, samples, sr); }
+    catch(e){ console.warn("ASR failed → demo:", e.message); S.asrErr = e.message; }
+  }
+  if (!r){ r = scoreDemo(samples, sr, S.t); r.engine="demo"; }
   r.reaction = speechStart? Math.round(speechStart-t0) : null;
   const u = stepUpdate(prog(ch.id), r.overall, r.reaction); store.set("cur_progress",progress);
   r.stepBefore=u.before; r.stepAfter=u.after; r.ok=u.ok;
