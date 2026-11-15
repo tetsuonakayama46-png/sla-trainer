@@ -21,6 +21,7 @@
   *{box-sizing:border-box} html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--fg);font-family:var(--display);-webkit-tap-highlight-color:transparent;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
   #app{height:100%;display:flex;flex-direction:column;touch-action:manipulation;overflow:hidden}
+  .menu.scroll{justify-content:flex-start;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:48px}
   .body{min-height:0;overflow:hidden}
   .gauge{height:5px;background:var(--line)} .gauge>i{display:block;height:100%;background:var(--accent);transition:width 1s linear}
   .hdr{display:flex;justify-content:space-between;padding:8px max(16px,env(safe-area-inset-left)) 6px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -81,9 +82,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.13"></script>
+<script src="curriculum.js?v=2026.11.15.14"></script>
 <script>
-const APP_VERSION = "2026.11.15.13";
+const APP_VERSION = "2026.11.15.14";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -94,42 +95,61 @@ const SESSION_SEC = 300, SILENCE_MS = 700, VAD_TH = 0.02;
 const NEW_PER_DAY = 4, REVIEW_PER_DAY = 4, WEEK_GATE = 0.7;
 // 単語長から参照タイミング（秒）を合成。rate で伸縮。
 function timings(en, rate){ const ws=en.split(/\s+/); let t=0; return ws.map(w=>{ const d=(0.10+0.055*w.replace(/[^A-Za-z']/g,"").length)/rate; const a=t; t+=d; return [w,a,t]; }); }
-const ITEMS = []; const BYID = {};
-for (const w of CUR.weeks) for (const it of w.items){ const o={...it, week:w.week, phase:w.phase}; ITEMS.push(o); BYID[o.id]=o; }
+const ALL_ITEMS = []; const BYID = {};
+for (const w of CUR.weeks) for (const it of w.items){ const o={...it, week:w.week, phase:w.phase}; ALL_ITEMS.push(o); BYID[o.id]=o; }
+let ITEMS = ALL_ITEMS;                          // コースで絞り込んだ学習対象（loadProfile で設定）
 
 // ==================== 永続化（この端末のみ） ====================
 const store = {
   get(k, d){ try { const v = localStorage.getItem(k); return v==null? d : JSON.parse(v);} catch { return d; } },
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-let progress = store.get("cur_progress", {});   // id -> {step, pass, fail, n, last, best}
-let streak = store.get("streak", {days:0, last:null});
-let startDate = store.get("cur_start", null);
-function prog(id){ return progress[id] ??= {step:1, pass:0, fail:0, n:0, last:0, best:0}; }
+// ---- 使う人（プロファイル）とコース。進捗・開始日・連続日・コースは人ごと、APIキー等は端末共通 ----
+const COURSES = {
+  beginner:  { name:"初心者コース",  desc:"音の土台から12週 → 最後に旅行パック。ステップ1（意味＋ゆっくり）から",      order:[1,2,3,4,5,6,7,8,9,10,11,12,0], startStep:1 },
+  practical: { name:"実践コース",    desc:"旅行パック50文を先に → 英借文・状況で即答。ステップ3（ひとりで）から始める", order:[0,6,7,8,9,10,11,12],           startStep:3 },
+};
+let PROFILES = store.get("profiles", null);
+if (!PROFILES){ PROFILES={ current:"p1", list:[{id:"p1",name:"ぼく",course:"beginner"},{id:"p2",name:"妻",course:"practical"}] }; store.set("profiles",PROFILES); }
+const P  = ()=>PROFILES.list.find(x=>x.id===PROFILES.current) || PROFILES.list[0];
+const pk = k => PROFILES.current==="p1" ? k : k+"@"+PROFILES.current;      // p1 は従来キーのまま（既存進捗を引き継ぐ）
+const COURSE = ()=>COURSES[P().course] || COURSES.beginner;
+const ORDER  = ()=>COURSE().order;
+const RANK   = w => { const i=ORDER().indexOf(w); return i<0? 99 : i; };
+let progress={}, streak={days:0,last:null}, startDate=null;
+function loadProfile(){
+  progress = store.get(pk("cur_progress"), {}); streak = store.get(pk("streak"), {days:0,last:null}); startDate = store.get(pk("cur_start"), null);
+  ITEMS = ALL_ITEMS.filter(i=>ORDER().includes(i.week)).sort((a,b)=>RANK(a.week)-RANK(b.week));
+}
+loadProfile();
+function switchProfile(id){ PROFILES.current=id; store.set("profiles",PROFILES); loadProfile(); }
+function setCourse(c){ P().course=c; store.set("profiles",PROFILES); loadProfile(); }
+function prog(id){ return progress[id] ??= {step:COURSE().startStep, pass:0, fail:0, n:0, last:0, best:0}; }
 function stepOf(id){ return STEPS[Math.min(5,Math.max(1,prog(id).step))-1]; }
 
 // ==================== 週の判定（日数＋前週の達成率でゲート） ====================
-function weekDone(week){ if (week===0) return true; const its=ITEMS.filter(i=>i.week===week); if(!its.length) return true; return its.filter(i=>prog(i.id).step>=3).length/its.length >= WEEK_GATE; }
+const ach3 = i => { const q=prog(i.id); return q.n>0 && q.step>=3; }, ach5 = i => { const q=prog(i.id); return q.n>0 && q.step>=5; };
+function weekDone(week){ const its=ITEMS.filter(i=>i.week===week); if(!its.length) return true; return its.filter(ach3).length/its.length >= WEEK_GATE; }
 function currentWeek(){
-  const days = startDate ? Math.floor((Date.now()-startDate)/864e5) : 0;
-  const byDays = Math.min(12, Math.floor(days/7)+1);
-  let w=1; while (w<byDays && weekDone(w)) w++;     // 前週が70%未満なら進まない（復習週）
-  return w;
+  const order=ORDER(), days = startDate ? Math.floor((Date.now()-startDate)/864e5) : 0;
+  const byDays = Math.min(order.length-1, Math.floor(days/7));
+  let i=0; while (i<byDays && weekDone(order[i])) i++;     // 前週が70%未満なら進まない（復習週）
+  return order[i];
 }
 function planToday(week){
   const now=Date.now(), DAY=864e5;
   // 復習: 途中の文（古い順）＋ 到達済みでも3日以上触っていない文（維持）
   const started = ITEMS.filter(i=>prog(i.id).n>0 && (prog(i.id).step<5 || now-prog(i.id).last>3*DAY)).sort((a,b)=>prog(a.id).last-prog(b.id).last);
-  const fresh = ITEMS.filter(i=>i.week<=week && prog(i.id).n===0).sort((a,b)=>a.week-b.week);
+  const fresh = ITEMS.filter(i=>RANK(i.week)<=RANK(week) && prog(i.id).n===0).sort((a,b)=>RANK(a.week)-RANK(b.week));
   let news = fresh.slice(0, NEW_PER_DAY);
   let review = started.slice(0, REVIEW_PER_DAY + (NEW_PER_DAY-news.length));
   // 新しい文は1セッションで2回出す（合格2回で次ステップ）。同じ文が連続しないよう交互に並べる
   let list=[]; const a=[...news, ...review], b=[...news];
   while (a.length||b.length){ if(a.length) list.push(a.shift()); if(b.length){ const x=b.shift(); if(list.at(-1)===x) b.push(x); else list.push(x); } }
-  if (!list.length){ list = ITEMS.filter(i=>i.week<=week).sort(()=>Math.random()-.5).slice(0,8); }
+  if (!list.length){ list = ITEMS.filter(i=>RANK(i.week)<=RANK(week)).sort(()=>Math.random()-.5).slice(0,8); }
   return { list, review:review.length, news:news.length };
 }
-function overallProgress(){ const done=ITEMS.filter(i=>prog(i.id).step>=5).length, mid=ITEMS.filter(i=>prog(i.id).step>=3).length; return {done, mid, total:ITEMS.length}; }
+function overallProgress(){ const done=ITEMS.filter(ach5).length, mid=ITEMS.filter(ach3).length; return {done, mid, total:ITEMS.length}; }
 
 
 // ==================== 実採点（音声認識: OpenAI transcription。鍵はこの端末のみに保存） ====================
@@ -295,7 +315,7 @@ async function speak(text, rate=1){
 // ==================== 状態 ====================
 const S = { asrErr:"", paused:false, phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
 let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, t0=0, speechStart=null, stopRec=null;
-const AUTO = ()=>!!store.get("auto_next", false);   // 自動で次へ（既定OFF: 自分で「次へ」を押す）
+const AUTO = ()=>!!store.get(pk("auto_next"), false);   // 自動で次へ（既定OFF: 自分で「次へ」を押す）
 const cur = ()=>S.list[S.idx];
 
 function el(h){ const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstElementChild; }
@@ -312,13 +332,13 @@ function render(){
     document.getElementById("perm").onclick = requestPermission; return;
   }
   if (S.phase==="menu"){
-    const wk = CUR.weeks.find(w=>w.week===S.week), ph = CUR.phases[wk.phase], op=overallProgress();
+    const wk = CUR.weeks.find(w=>w.week===S.week), ph = CUR.phases.find(x=>x.id===wk.phase), op=overallProgress();
     const pct = Math.round(op.mid/op.total*100);
     app.replaceChildren(el(`<div class="menu">
-      <div class="wk">Week ${S.week} / 12 ・ フェーズ${ph.id} ${esc(ph.name)}</div>
+      <div class="wk">${esc(P().name)} ・ ${esc(COURSE().name)} ・ 第${RANK(S.week)+1}/${ORDER().length}週 ・ フェーズ${ph.id} ${esc(ph.name)}</div>
       <h1>${esc(wk.title)}</h1>
       <p class="goal">${esc(ph.goal)}</p>
-      ${ITEMS.some(i=>i.week===0&&prog(i.id).step<3)?`<p class="goal" style="color:var(--warn)">旅行 優先パック（空港・機内・ホテル・買い物・レストラン）を先に出しています：${ITEMS.filter(i=>i.week===0&&prog(i.id).step>=3).length}/${ITEMS.filter(i=>i.week===0).length}文</p>`:""}
+      <div class="small" style="margin:-4px 0 8px">使う人を切り替え: ${PROFILES.list.map(x=>x.id===PROFILES.current?`<b style="color:var(--fg)">${esc(x.name)}</b>`:`<a data-p="${x.id}" class="swp" style="color:var(--native);text-decoration:underline">${esc(x.name)}</a>`).join(" ／ ")}</div>
       <div class="plan"><div><b>${S.plan.news}</b><span>新しい文</span></div><div><b>${S.plan.review}</b><span>復習</span></div><div><b>${streak.days}</b><span>連続日</span></div></div>
       <div class="bar"><i style="width:${pct}%"></i></div>
       <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
@@ -329,20 +349,22 @@ function render(){
     </div>`));
     document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; };
     document.getElementById("showcur").onclick=()=>{ S.openWeek=null; S.phase="curriculum"; render(); };
+    for (const a of document.querySelectorAll(".swp")) a.onclick=()=>{ switchProfile(a.dataset.p); startSession(); };
     for (const id of ["openset","openset2"]){ const a=document.getElementById(id); if(a) a.onclick=()=>{ S.phase="settings"; render(); }; }
     return;
   }
   if (S.phase==="curriculum"){
     const op=overallProgress(), nowW=S.week, open=S.openWeek ?? nowW;
-    const weekPct = w => { const its=ITEMS.filter(i=>i.week===w); return Math.round(its.filter(i=>prog(i.id).step>=3).length/its.length*100); };
+    const weekPct = w => { const its=ITEMS.filter(i=>i.week===w); return Math.round(its.filter(ach3).length/its.length*100); };
     const weekTouched = w => ITEMS.filter(i=>i.week===w && prog(i.id).n>0).length;
     let html = `<div class="cur"><button class="btn ghost" id="back" style="margin:0 0 10px;padding:8px 14px">← 戻る</button>
-      <h1>3か月カリキュラム</h1>
+      <h1>${esc(P().name)}：${esc(COURSE().name)}</h1><p class="goal">${esc(COURSE().desc)}</p>
       <div class="bar"><i style="width:${Math.round(op.mid/op.total*100)}%"></i></div>
-      <div class="legend">全${op.total}文 ・ 「ひとりで」以上 ${op.mid}文 ・ 「状況で即答」到達 ${op.done}文 ・ 今は <b style="color:var(--fg)">Week ${nowW}</b>（開始から${startDate?Math.floor((Date.now()-startDate)/864e5):0}日目）<br>● 緑＝到達したステップ ・ ● 青＝今いるステップ ・ 週の%＝「ひとりで」以上の文の割合（70%で次週へ）</div>`;
-    for (const ph of CUR.phases){
+      <div class="legend">全${op.total}文 ・ 「ひとりで」以上 ${op.mid}文 ・ 「状況で即答」到達 ${op.done}文 ・ 今は <b style="color:var(--fg)">第${RANK(nowW)+1}週${nowW===0?"（旅行）":"（W"+nowW+"）"}</b>（開始から${startDate?Math.floor((Date.now()-startDate)/864e5):0}日目）<br>● 緑＝到達したステップ ・ ● 青＝今いるステップ ・ 週の%＝「ひとりで」以上の文の割合（70%で次週へ）</div>`;
+    const phOrder=[...new Set(ORDER().map(w=>CUR.weeks.find(x=>x.week===w).phase))];
+    for (const ph of phOrder.map(id=>CUR.phases.find(x=>x.id===id))){
       html += `<div class="ph">フェーズ${ph.id} ${esc(ph.name)} ・ ${esc(ph.goal)}</div>`;
-      for (const w of CUR.weeks.filter(w=>w.phase===ph.id)){
+      for (const w of ORDER().map(n=>CUR.weeks.find(x=>x.week===n)).filter(w=>w.phase===ph.id)){
         const pct=weekPct(w.week), cls = w.week===nowW?"now": pct>=70?"done":"";
         html += `<div class="wkrow ${cls}" data-w="${w.week}"><span class="n">${w.week===0?"旅行":"W"+w.week}</span><span class="t">${esc(w.title)}<small>${w.items.length}文 ・ 着手 ${weekTouched(w.week)}文</small></span>${w.week===nowW?`<span class="tag">今ここ</span>`:w.week===0&&pct<70?`<span class="tag" style="background:var(--warn);color:#000">優先</span>`:""}<span class="pct">${pct}%</span></div>`;
         if (w.week===open){
@@ -360,8 +382,15 @@ function render(){
   }
   if (S.phase==="settings"){
     const k=getKey();
-    app.replaceChildren(el(`<div class="menu">
-      <div class="wk">設定</div><h1>音声認識で採点する</h1>
+    app.replaceChildren(el(`<div class="menu scroll">
+      <div class="wk">設定</div>
+      <h1>使う人</h1>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${PROFILES.list.map(x=>`<button class="btn ${x.id===PROFILES.current?"":"ghost"} pf" data-p="${x.id}" style="flex:1;min-width:120px">${esc(x.name)}${x.id===PROFILES.current?"（いま）":""}</button>`).join("")}</div>
+      <div class="small">進捗・開始日・連続日・コースは人ごとに別。<a id="rename" style="color:var(--native);text-decoration:underline">名前を変える</a></div>
+      <h1 style="margin-top:16px">コース（${esc(P().name)}）</h1>
+      ${Object.entries(COURSES).map(([id,c])=>`<label style="display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:12px;margin-top:8px"><input type="radio" name="course" value="${id}" ${P().course===id?"checked":""} style="width:22px;height:22px;flex:none"><span><b>${esc(c.name)}</b><br><small style="color:var(--mute)">${esc(c.desc)}</small></span></label>`).join("")}
+      <div class="small">コースを変えても進捗は消えません（出題順と、未着手の文の開始ステップが変わります）</div>
+      <h1 style="margin-top:16px">音声認識で採点する</h1>
       <p class="goal">OpenAI の API キー（sk-…）を貼ると、言えた単語を実際に判定します。キーは<b>この端末の中だけ</b>に保存され、どこにも送信されません（OpenAI への採点リクエスト以外）。費用は1日5分で約¥5。</p>
       <input id="key" type="password" placeholder="sk-..." value="${esc(k)}" autocomplete="off" style="width:100%;padding:14px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--fg);font-size:16px">
       <div class="small" id="keymsg">${k?"保存済み（音声認識モード）":"未設定（デモ採点モード）"}</div>
@@ -377,12 +406,15 @@ function render(){
       <button class="btn ghost" id="voicetest">🔊 音声テスト（Hello, welcome to our hotel.）</button><p class="small" id="voicemsg" style="color:var(--muted)">${S.voice?"前回の音声: "+esc(S.voice):""}</p>
       <button class="btn ghost" id="back">戻る</button>
     </div>`));
-    document.getElementById("auto").onchange=e=>store.set("auto_next", e.target.checked);
+    document.getElementById("auto").onchange=e=>store.set(pk("auto_next"), e.target.checked);
+    for (const b of document.querySelectorAll(".pf")) b.onclick=()=>{ switchProfile(b.dataset.p); render(); };
+    document.getElementById("rename").onclick=()=>{ const n=prompt("名前", P().name); if(n&&n.trim()){ P().name=n.trim().slice(0,12); store.set("profiles",PROFILES); render(); } };
+    for (const r of document.querySelectorAll('input[name="course"]')) r.onchange=()=>{ setCourse(r.value); render(); };
     document.getElementById("native").onchange=e=>store.set("native_voice", e.target.checked);
     document.getElementById("micoff").onchange=e=>store.set("mic_off_play", e.target.checked);
     document.getElementById("clearvoice").onclick=async()=>{ try{ await caches.delete(TTS_CACHE); document.getElementById("voicemsg").textContent="保存した音声を削除しました（次回から作り直します）"; }catch(e){ document.getElementById("voicemsg").textContent="削除できません: "+e.message; } };
     document.getElementById("voicetest").onclick=async()=>{ const m=document.getElementById("voicemsg"); m.textContent="再生中…"; unlockAudio(); stopSpeak(); if(MICOFF()) micOff(); await speak("Hello, welcome to our hotel.",1); m.textContent="結果: "+(S.voice||"不明"); };
-    document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
+    document.getElementById("back").onclick=()=>{ startSession(); };
     document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
     document.getElementById("savekey").onclick=async()=>{
       const v=document.getElementById("key").value.trim(); const msg=document.getElementById("keymsg");
@@ -478,11 +510,11 @@ async function requestPermission(){
   }catch(e){ S.err="マイクの許可が必要です: "+e.message; render(); }
 }
 function startSession(){
-  if (!startDate){ startDate=Date.now(); store.set("cur_start", startDate); }
+  if (!startDate){ startDate=Date.now(); store.set(pk("cur_start"), startDate); }
   S.week = currentWeek(); S.plan = planToday(S.week); S.list = S.plan.list;
   S.idx=0; S.combo=0; S.comboMax=0; S.remain=SESSION_SEC; S.detail=null; S.result=null; S.userWave=[]; S.reveal=false;
   const today = new Date().toISOString().slice(0,10);
-  if (streak.last!==today){ const y=new Date(Date.now()-864e5).toISOString().slice(0,10); streak={days: streak.last===y? streak.days+1 : 1, last:today}; store.set("streak",streak); }
+  if (streak.last!==today){ const y=new Date(Date.now()-864e5).toISOString().slice(0,10); streak={days: streak.last===y? streak.days+1 : 1, last:today}; store.set(pk("streak"),streak); }
   S.phase="menu"; render();
 }
 async function onFirstTap(){
@@ -543,7 +575,7 @@ async function onRecorded(samples, sr){
   }
   if (!r){ r = scoreDemo(samples, sr, S.t); r.engine="demo"; }
   r.reaction = speechStart? Math.round(speechStart-t0) : null;
-  const u = stepUpdate(prog(ch.id), r.overall, r.reaction); store.set("cur_progress",progress);
+  const u = stepUpdate(prog(ch.id), r.overall, r.reaction); store.set(pk("cur_progress"),progress);
   r.stepBefore=u.before; r.stepAfter=u.after; r.ok=u.ok;
   S.result=r; S.detail=r.words; S.reveal=true;                 // 結果では必ず英文と意味を見せる
   S.combo = u.ok ? S.combo+1 : 0; S.comboMax=Math.max(S.comboMax,S.combo);
