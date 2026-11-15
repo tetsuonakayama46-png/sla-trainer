@@ -63,7 +63,7 @@
   .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden} .bar i{display:block;height:100%;background:var(--good)}
   .small{font-size:12px;color:var(--muted);text-align:center}
   .ctl{display:flex;gap:8px;padding:6px max(16px,env(safe-area-inset-left)) 8px}
-  .ctl button{flex:1;padding:12px 6px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg);font-size:14px;font-weight:600;font-family:inherit}
+  .ctl button{touch-action:manipulation;flex:1;padding:12px 6px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg);font-size:14px;font-weight:600;font-family:inherit}
   .ctl button.pri{background:var(--accent);border-color:var(--accent);color:#fff} .ctl button.stop{border-color:var(--bad);color:var(--bad)} .ctl button:active{transform:scale(.96)}
   .overlay{pointer-events:none}
   .cur{height:100%;overflow:auto;padding:16px max(16px,env(safe-area-inset-left)) 24px;-webkit-overflow-scrolling:touch}
@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.9"></script>
+<script src="curriculum.js?v=2026.11.15.10"></script>
 <script>
-const APP_VERSION = "2026.11.15.9";
+const APP_VERSION = "2026.11.15.10";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -209,7 +209,9 @@ function pickVoice(){
 function speakLocal(text, rate=1){ return new Promise(res=>{
   const u = new SpeechSynthesisUtterance(text); u.lang="en-US"; u.rate=rate; const v=pickVoice(); if(v) u.voice=v;
   let done=false; const fin=()=>{ if(!done){done=true;res();} };
-  u.onend=fin; u.onerror=fin; speechSynthesis.cancel(); speechSynthesis.speak(u);
+  u.onend=fin; u.onerror=e=>{ S.voice=(S.voice||"端末音声")+"（端末音声エラー: "+(e.error||"?")+"）"; const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; fin(); };
+  if(speechSynthesis.speaking||speechSynthesis.pending) speechSynthesis.cancel();
+  setTimeout(()=>speechSynthesis.speak(u), 60);
   setTimeout(fin, 1500 + text.length*90/rate);
 });}
 // ---- ネイティブ音声（OpenAI TTS）。鍵があれば使い、生成した音声は端末にキャッシュ（同じ文は再課金なし）----
@@ -234,15 +236,34 @@ async function ttsFetch(text, rate){
 // <audio>要素はユーザー操作時に一度無音を再生して解錠しておく（iOS対策）
 const SILENT_WAV="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 let ttsAudio=null;
-function unlockAudio(){ try{ if(!ttsAudio){ ttsAudio=new Audio(); ttsAudio.setAttribute("playsinline",""); ttsAudio.preload="auto"; } ttsAudio.src=SILENT_WAV; ttsAudio.play().catch(()=>{}); }catch{} }
-function playBuf(buf){ return new Promise((res,rej)=>{
+let audioUnlocked=false, speechUnlocked=false;
+function unlockAudio(){
+  try{ if(!ttsAudio){ ttsAudio=new Audio(); ttsAudio.setAttribute("playsinline",""); ttsAudio.preload="auto"; }
+    if(!audioUnlocked && ttsAudio.paused){ ttsAudio.src=SILENT_WAV; ttsAudio.play().then(()=>{audioUnlocked=true;}).catch(()=>{}); } }catch{}
+  try{ if(actx && actx.state!=="running") actx.resume(); }catch{}
+  try{ if(!speechUnlocked && "speechSynthesis" in window){ const u=new SpeechSynthesisUtterance(" "); u.volume=0; speechSynthesis.speak(u); speechUnlocked=true; } }catch{}
+}
+function playViaElement(buf){ return new Promise((res,rej)=>{
   if(!ttsAudio) return rej(new Error("audio not unlocked"));
-  const url=URL.createObjectURL(new Blob([buf],{type:"audio/mpeg"})); const a=ttsAudio; let done=false;
-  const fin=ok=>{ if(done) return; done=true; a.onended=a.onerror=a.onpause=null; URL.revokeObjectURL(url); ok?res():rej(new Error("audio element failed")); };
-  a.onended=()=>fin(true); a.onerror=()=>fin(false); a.onpause=()=>{ if(!a.ended) fin(true); };
-  a.src=url; a.playbackRate=1; a.play().then(()=>{ setTimeout(()=>fin(true), (a.duration||10)*1000+1500); }).catch(e=>fin(false));
+  const url=URL.createObjectURL(new Blob([buf],{type:"audio/mpeg"})); const a=ttsAudio; let done=false, started=false;
+  const fin=(ok,why)=>{ if(done) return; done=true; a.onended=a.onerror=a.onpause=a.onplaying=null; URL.revokeObjectURL(url); ok?res():rej(new Error(why||"audio element failed")); };
+  a.onplaying=()=>{ started=true; }; a.onended=()=>fin(true); a.onerror=()=>fin(false,"audio element error"); a.onpause=()=>{ if(started&&!a.ended) fin(true); };
+  a.src=url; a.playbackRate=1; a.volume=1; a.muted=false;
+  a.play().then(()=>{ setTimeout(()=>{ if(!started) fin(false,"audio element did not start"); }, 1500); setTimeout(()=>fin(true), (a.duration||10)*1000+2000); }).catch(e=>fin(false,"play() rejected: "+e.name));
 });}
-function stopAudioEl(){ try{ if(ttsAudio){ ttsAudio.pause(); } }catch{} }
+let ttsSrcNode=null;
+async function playViaContext(buf){
+  if(!actx) throw new Error("no AudioContext");
+  if(actx.state!=="running") await actx.resume();
+  if(actx.state!=="running") throw new Error("AudioContext "+actx.state);
+  const ab=await actx.decodeAudioData(buf.slice(0));
+  await new Promise(res=>{ const src=actx.createBufferSource(); src.buffer=ab; src.connect(actx.destination); ttsSrcNode=src; let done=false; const fin=()=>{ if(!done){done=true; if(ttsSrcNode===src) ttsSrcNode=null; res();} }; src.onended=fin; src.start(); setTimeout(fin, ab.duration*1000+800); });
+}
+async function playBuf(buf){
+  try{ await playViaElement(buf); S.voice+="・audio要素"; }
+  catch(e1){ try{ await playViaContext(buf); S.voice+="・AudioContext（"+e1.message+"）"; } catch(e2){ throw new Error(e1.message+" / "+e2.message); } }
+}
+function stopAudioEl(){ try{ if(ttsAudio){ ttsAudio.pause(); } }catch{} try{ if(ttsSrcNode){ ttsSrcNode.stop(); ttsSrcNode=null; } }catch{} }
 async function speak(text, rate=1){
   if(!NATIVE()){ S.voice="端末音声（設定でネイティブOFF）"; return speakLocal(text, rate); }
   if(!getKey()){ S.voice="端末音声（キー未設定）"; return speakLocal(text, rate); }
@@ -252,7 +273,7 @@ async function speak(text, rate=1){
     const {buf,cached}=await ttsFetch(text, rate);
     if(gen!==ttsGen) return;
     S.voice="ネイティブ"+(cached?"（保存済み）":"（生成 "+Math.round(performance.now()-t)+"ms）"); const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice;
-    await playBuf(buf);
+    await playBuf(buf); { const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; }
   }catch(e){ console.warn("native tts fallback:", e.message); S.voice="端末音声（ネイティブ失敗: "+e.message+"）"; const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; if(gen===ttsGen) return speakLocal(text, rate); }
 }
 
@@ -386,12 +407,12 @@ function render(){
 function controlsHtml(){
   const busy = S.phase==="playing"||S.phase==="recording"||S.phase==="scoring";
   if (S.phase==="ready") return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-quit">✕ 終了</button></div>`;
-  if (busy) return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-stop" class="stop">■ 止める</button></div>`;
+  if (busy) return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-stop" class="stop">■ 止める</button></div><div id="voicesrc" class="small" style="text-align:center;color:var(--muted)">${S.voice?"音声: "+esc(S.voice):""}</div>`;
   // result / paused: 何も自動で進まない
   return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-redo">↻ 再録</button><button id="c-next" class="pri">次へ ▶</button><button id="c-quit">✕</button></div><div id="voicesrc" class="small" style="text-align:center;color:var(--muted)">${S.voice?"音声: "+esc(S.voice):""}</div>`;
 }
 function bindControls(){
-  const on=(id,fn)=>{ const b=document.getElementById(id); if(b) b.onpointerdown=e=>{ e.stopPropagation(); e.preventDefault(); fn(); }; };
+  const on=(id,fn)=>{ const b=document.getElementById(id); if(b){ b.onpointerdown=e=>e.stopPropagation(); b.onclick=e=>{ e.stopPropagation(); e.preventDefault(); unlockAudio(); fn(); }; } };
   on("c-model", replayModel); on("c-stop", stopNow); on("c-redo", ()=>startItem()); on("c-next", ()=>next()); on("c-quit", finishSession);
 }
 // お手本を聞く: 録音中なら録音を破棄して止め、通常速度で読み上げ。終わったら待機（勝手に録音は始めない）
