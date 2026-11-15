@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.8"></script>
+<script src="curriculum.js?v=2026.11.15.9"></script>
 <script>
-const APP_VERSION = "2026.11.15.8";
+const APP_VERSION = "2026.11.15.9";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -216,32 +216,44 @@ function speakLocal(text, rate=1){ return new Promise(res=>{
 const NATIVE = ()=>store.get("native_voice", true)!==false;
 const TTS_MODEL="tts-1-hd", TTS_VOICE="nova";
 let ttsSrc=null, ttsGen=0;
-function stopSpeak(){ speechSynthesis.cancel(); ttsGen++; if(ttsSrc){ try{ttsSrc.stop();}catch{} ttsSrc=null; } }
+function stopSpeak(){ speechSynthesis.cancel(); ttsGen++; stopAudioEl(); }
 async function ttsFetch(text, rate){
   const key=getKey(); if(!key) throw new Error("no key");
   const url=location.origin+"/__tts/"+encodeURIComponent(TTS_MODEL+"|"+TTS_VOICE+"|"+rate+"|"+text);
-  let cache=null; try{ cache=await caches.open("tts-v1"); const hit=await cache.match(url); if(hit) return await hit.arrayBuffer(); }catch{}
+  let cache=null; try{ cache=await caches.open("tts-v1"); const hit=await cache.match(url); if(hit) return {buf:await hit.arrayBuffer(),cached:true}; }catch{}
   const ctl=new AbortController(); const tm=setTimeout(()=>ctl.abort(),15000);
   const r=await fetch("https://api.openai.com/v1/audio/speech",{method:"POST",signal:ctl.signal,
     headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},
     body:JSON.stringify({model:TTS_MODEL,voice:TTS_VOICE,input:text,speed:rate,response_format:"mp3"})});
   clearTimeout(tm);
-  if(!r.ok) throw new Error("tts "+r.status);
+  if(!r.ok){ let d=""; try{ d=(await r.json()).error?.message||""; }catch{} throw new Error("HTTP "+r.status+(d?" "+d.slice(0,80):"")); }
   const buf=await r.arrayBuffer();
   try{ if(cache) await cache.put(url,new Response(buf.slice(0),{headers:{"Content-Type":"audio/mpeg"}})); }catch{}
-  return buf;
+  return {buf,cached:false};
 }
+// <audio>要素はユーザー操作時に一度無音を再生して解錠しておく（iOS対策）
+const SILENT_WAV="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+let ttsAudio=null;
+function unlockAudio(){ try{ if(!ttsAudio){ ttsAudio=new Audio(); ttsAudio.setAttribute("playsinline",""); ttsAudio.preload="auto"; } ttsAudio.src=SILENT_WAV; ttsAudio.play().catch(()=>{}); }catch{} }
+function playBuf(buf){ return new Promise((res,rej)=>{
+  if(!ttsAudio) return rej(new Error("audio not unlocked"));
+  const url=URL.createObjectURL(new Blob([buf],{type:"audio/mpeg"})); const a=ttsAudio; let done=false;
+  const fin=ok=>{ if(done) return; done=true; a.onended=a.onerror=a.onpause=null; URL.revokeObjectURL(url); ok?res():rej(new Error("audio element failed")); };
+  a.onended=()=>fin(true); a.onerror=()=>fin(false); a.onpause=()=>{ if(!a.ended) fin(true); };
+  a.src=url; a.playbackRate=1; a.play().then(()=>{ setTimeout(()=>fin(true), (a.duration||10)*1000+1500); }).catch(e=>fin(false));
+});}
+function stopAudioEl(){ try{ if(ttsAudio){ ttsAudio.pause(); } }catch{} }
 async function speak(text, rate=1){
-  if(!(NATIVE()&&getKey()&&actx)) return speakLocal(text, rate);
+  if(!NATIVE()){ S.voice="端末音声（設定でネイティブOFF）"; return speakLocal(text, rate); }
+  if(!getKey()){ S.voice="端末音声（キー未設定）"; return speakLocal(text, rate); }
   const gen=++ttsGen;
   try{
-    const buf=await ttsFetch(text, rate);
+    const t=performance.now();
+    const {buf,cached}=await ttsFetch(text, rate);
     if(gen!==ttsGen) return;
-    const ab=await actx.decodeAudioData(buf.slice(0));
-    if(gen!==ttsGen) return;
-    if(actx.state==="suspended") await actx.resume();
-    await new Promise(res=>{ const src=actx.createBufferSource(); src.buffer=ab; src.connect(actx.destination); ttsSrc=src; let done=false; const fin=()=>{ if(!done){done=true; if(ttsSrc===src) ttsSrc=null; res();} }; src.onended=fin; src.start(); setTimeout(fin, ab.duration*1000+800); });
-  }catch(e){ console.warn("native tts fallback:", e.message); S.ttsErr=String(e.message); if(gen===ttsGen) return speakLocal(text, rate); }
+    S.voice="ネイティブ"+(cached?"（保存済み）":"（生成 "+Math.round(performance.now()-t)+"ms）"); const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice;
+    await playBuf(buf);
+  }catch(e){ console.warn("native tts fallback:", e.message); S.voice="端末音声（ネイティブ失敗: "+e.message+"）"; const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; if(gen===ttsGen) return speakLocal(text, rate); }
 }
 
 // ==================== 状態 ====================
@@ -277,7 +289,7 @@ function render(){
       <button class="btn" id="go">はじめる（約5分）</button>
       <button class="btn ghost" id="showcur" style="margin-top:6px">カリキュラム全体と進捗を見る</button>
       <div class="small">ステップ: 意味＋ゆっくり → いっしょに → ひとりで → 見ないで → 状況で即答</div>
-      <div class="small">採点: ${getKey()?"音声認識":"デモ（<a id=\"openset\" style=\"color:var(--native)\">設定でキーを入れる</a>）"} ・ v${APP_VERSION} ・ <a id="openset2" style="color:var(--muted);text-decoration:underline">設定</a></div>
+      <div class="small">採点: ${getKey()?"音声認識":"デモ（<a id=\"openset\" style=\"color:var(--native)\">設定でキーを入れる</a>）"} ・ 音声: ${getKey()&&NATIVE()?"ネイティブ":"端末"} ・ v${APP_VERSION} ・ <a id="openset2" style="color:var(--muted);text-decoration:underline">設定</a></div>
     </div>`));
     document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; };
     document.getElementById("showcur").onclick=()=>{ S.openWeek=null; S.phase="curriculum"; render(); };
@@ -323,10 +335,12 @@ function render(){
         <span>自動で次へ進む（OFF: 自分で「次へ」を押す）</span><input id="auto" type="checkbox" style="width:22px;height:22px" ${AUTO()?"checked":""}></div>
       <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
         <span>ネイティブ音声（OpenAI・要キー）<br><small style="color:var(--mute)">${getKey()?"ON時はネイティブ音声、OFF/失敗時は端末の音声。生成した音は端末に保存され再課金なし":"キーを保存すると使えます"}</small></span><input id="native" type="checkbox" style="width:22px;height:22px" ${NATIVE()?"checked":""}></div>
+      <button class="btn ghost" id="voicetest">🔊 音声テスト（Hello, welcome to our hotel.）</button><p class="small" id="voicemsg" style="color:var(--muted)">${S.voice?"前回の音声: "+esc(S.voice):""}</p>
       <button class="btn ghost" id="back">戻る</button>
     </div>`));
     document.getElementById("auto").onchange=e=>store.set("auto_next", e.target.checked);
     document.getElementById("native").onchange=e=>store.set("native_voice", e.target.checked);
+    document.getElementById("voicetest").onclick=async()=>{ const m=document.getElementById("voicemsg"); m.textContent="再生中…"; unlockAudio(); stopSpeak(); await speak("Hello, welcome to our hotel.",1); m.textContent="結果: "+(S.voice||"不明"); };
     document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
     document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
     document.getElementById("savekey").onclick=async()=>{
@@ -374,7 +388,7 @@ function controlsHtml(){
   if (S.phase==="ready") return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-quit">✕ 終了</button></div>`;
   if (busy) return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-stop" class="stop">■ 止める</button></div>`;
   // result / paused: 何も自動で進まない
-  return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-redo">↻ 再録</button><button id="c-next" class="pri">次へ ▶</button><button id="c-quit">✕</button></div>`;
+  return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-redo">↻ 再録</button><button id="c-next" class="pri">次へ ▶</button><button id="c-quit">✕</button></div><div id="voicesrc" class="small" style="text-align:center;color:var(--muted)">${S.voice?"音声: "+esc(S.voice):""}</div>`;
 }
 function bindControls(){
   const on=(id,fn)=>{ const b=document.getElementById(id); if(b) b.onpointerdown=e=>{ e.stopPropagation(); e.preventDefault(); fn(); }; };
@@ -414,7 +428,7 @@ function drawWave(){
 // ==================== フロー ====================
 async function requestPermission(){
   try{
-    const AC = window.AudioContext||window.webkitAudioContext; actx = new AC(); await actx.resume();
+    unlockAudio(); const AC = window.AudioContext||window.webkitAudioContext; actx = new AC(); await actx.resume();
     stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
     store.set("mic",1); speechSynthesis.getVoices();
     startSession();
@@ -431,7 +445,7 @@ function startSession(){
 async function onFirstTap(){
   if (S.phase!=="ready") return; app.onpointerdown=null;
   try{
-    const AC = window.AudioContext||window.webkitAudioContext; actx ??= new AC(); await actx.resume();
+    unlockAudio(); const AC = window.AudioContext||window.webkitAudioContext; actx ??= new AC(); await actx.resume();
     stream ??= await navigator.mediaDevices.getUserMedia({audio:true});
     tone(523,.08);
     clearInterval(timer); timer=setInterval(()=>{ if(!(S.phase==="playing"||S.phase==="recording"||S.phase==="scoring")) return; S.remain--; if(S.remain<=0){ finishSession(); } else { const g=document.querySelector(".gauge>i"); if(g) g.style.width=S.remain/SESSION_SEC*100+"%"; } },1000);
