@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.11"></script>
+<script src="curriculum.js?v=2026.11.15.12"></script>
 <script>
-const APP_VERSION = "2026.11.15.11";
+const APP_VERSION = "2026.11.15.12";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -277,7 +277,7 @@ async function speak(text, rate=1){
     const {buf,cached}=await ttsFetch(text, rate);
     if(gen!==ttsGen) return;
     S.voice="ネイティブ"+(cached?"（保存済み）":"（生成 "+Math.round(performance.now()-t)+"ms）"); const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice;
-    if(MICOFF() && S.phase!=="recording") micOff();
+    if(MICOFF() && S.phase==="paused") micOff();   // お手本ボタン（待機中）のときだけマイクを離す
     await playBuf(buf); { const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; }
   }catch(e){ console.warn("native tts fallback:", e.message); S.voice="端末音声（ネイティブ失敗: "+e.message+"）"; const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; if(gen===ttsGen) return speakLocal(text, rate); }
 }
@@ -419,11 +419,13 @@ function controlsHtml(){
   if (S.phase==="ready") return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-quit">✕ 終了</button></div>`;
   if (busy) return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-stop" class="stop">■ 止める</button></div><div id="voicesrc" class="small" style="text-align:center;color:var(--muted)">${S.voice?"音声: "+esc(S.voice):""}</div>`;
   // result / paused: 何も自動で進まない
+  if (S.needMic) return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-rec" class="pri">🎙 録音する</button><button id="c-quit">✕</button></div><div id="voicesrc" class="small" style="text-align:center;color:var(--muted)">マイクを再開します（タップ）</div>`;
   return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-redo">↻ 再録</button><button id="c-next" class="pri">次へ ▶</button><button id="c-quit">✕</button></div><div id="voicesrc" class="small" style="text-align:center;color:var(--muted)">${S.voice?"音声: "+esc(S.voice):""}</div>`;
 }
 function bindControls(){
   const on=(id,fn)=>{ const b=document.getElementById(id); if(b){ b.onpointerdown=e=>e.stopPropagation(); b.onclick=e=>{ e.stopPropagation(); e.preventDefault(); unlockAudio(); fn(); }; } };
-  on("c-model", replayModel); on("c-stop", stopNow); on("c-redo", ()=>startItem()); on("c-next", ()=>next()); on("c-quit", finishSession);
+  on("c-model", replayModel); on("c-stop", stopNow); on("c-redo", ()=>{ micOn().catch(()=>{}); startItem(); }); on("c-next", ()=>{ micOn().catch(()=>{}); next(); }); on("c-quit", finishSession);
+  on("c-rec", ()=>{ micOn().then(()=>{ S.needMic=false; S.paused=false; startRecording(); }).catch(e=>{ S.voice="マイクを開けません: "+e.name+"（Safariの「ぁあ」→Webサイトの設定→マイクを許可）"; render(); }); });
 }
 // お手本を聞く: 録音中なら録音を破棄して止め、通常速度で読み上げ。終わったら待機（勝手に録音は始めない）
 async function replayModel(){
@@ -495,10 +497,11 @@ async function startItem(){
 function startRecording(){
   if(!stream || stream.getTracks().every(t=>t.readyState==="ended")){
     S.phase="recording"; render();
-    micOn().then(()=>{ if(S.phase==="recording") startRecording(); }).catch(e=>{ S.phase="error"; S.err="マイクを再取得できません: "+e.message; render(); });
+    micOn().then(()=>{ if(S.phase==="recording") startRecording(); })
+      .catch(e=>{ S.needMic=true; S.paused=true; S.phase="paused"; S.reveal=true; S.voice=(S.voice||"")+"（マイク再開はタップが必要: "+e.name+"）"; render(); });
     return;
   }
-  t0=performance.now(); speechStart=null; S.userWave=[]; S.phase="recording"; render();
+  S.needMic=false; t0=performance.now(); speechStart=null; S.userWave=[]; S.phase="recording"; render();
   const chunksArr=[]; src=actx.createMediaStreamSource(stream); proc=actx.createScriptProcessor(4096,1,1);
   proc.onaudioprocess=e=>chunksArr.push(new Float32Array(e.inputBuffer.getChannelData(0)));
   src.connect(proc); proc.connect(actx.destination);
