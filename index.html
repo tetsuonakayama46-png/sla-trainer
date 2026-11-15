@@ -20,11 +20,12 @@
   }
   *{box-sizing:border-box} html,body{height:100%;margin:0}
   body{background:var(--bg);color:var(--fg);font-family:var(--display);-webkit-tap-highlight-color:transparent;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
-  #app{height:100%;display:flex;flex-direction:column;touch-action:manipulation}
+  #app{height:100%;display:flex;flex-direction:column;touch-action:manipulation;overflow:hidden}
+  .body{min-height:0;overflow:hidden}
   .gauge{height:5px;background:var(--line)} .gauge>i{display:block;height:100%;background:var(--accent);transition:width 1s linear}
   .hdr{display:flex;justify-content:space-between;padding:8px max(16px,env(safe-area-inset-left)) 6px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .hdr .combo{color:var(--warn);font-weight:700}
-  .scene{position:relative;aspect-ratio:16/9;max-height:30dvh;background:var(--panel);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+  .scene{position:relative;aspect-ratio:16/9;max-height:20dvh;background:var(--panel);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}
   .scene .tap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.55);color:var(--fg);gap:6px}
   .scene .tap b{font-size:40px;line-height:1}
   .body{flex:1;display:flex;flex-direction:column;justify-content:center;padding:16px max(16px,env(safe-area-inset-left));gap:14px}
@@ -37,7 +38,7 @@
   .wave{padding:0 max(16px,env(safe-area-inset-left)) max(20px,env(safe-area-inset-bottom))}
   .wave .lbl{display:flex;justify-content:space-between;font-size:10px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
   .wave .lbl b{color:var(--native)} .wave .lbl i{color:var(--good);font-style:normal}
-  canvas{width:100%;height:110px;display:block;background:rgba(0,0,0,.35);border-radius:10px}
+  canvas{width:100%;height:80px;display:block;background:rgba(0,0,0,.35);border-radius:10px}
   .overlay{position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.5);pointer-events:none}
   .overlay.flash{background:rgba(74,222,128,.22)}
   .overlay .n{font-size:min(36vw,150px);font-weight:900;line-height:1;text-shadow:0 0 30px rgba(0,0,0,.7);animation:pop .3s ease-out}
@@ -61,14 +62,18 @@
   .menu .plan{display:flex;gap:10px;margin-top:6px} .menu .plan div{flex:1;background:var(--panel);border-radius:12px;padding:12px;text-align:center} .menu .plan b{display:block;font-size:26px} .menu .plan span{font-size:11px;color:var(--muted)}
   .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden} .bar i{display:block;height:100%;background:var(--good)}
   .small{font-size:12px;color:var(--muted);text-align:center}
+  .ctl{display:flex;gap:8px;padding:6px max(16px,env(safe-area-inset-left)) 8px}
+  .ctl button{flex:1;padding:12px 6px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg);font-size:14px;font-weight:600;font-family:inherit}
+  .ctl button.pri{background:var(--accent);border-color:var(--accent);color:#fff} .ctl button.stop{border-color:var(--bad);color:var(--bad)} .ctl button:active{transform:scale(.96)}
+  .overlay{pointer-events:none}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.3"></script>
+<script src="curriculum.js?v=2026.11.15.4"></script>
 <script>
-const APP_VERSION = "2026.11.15.3";
+const APP_VERSION = "2026.11.15.4";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -199,8 +204,9 @@ function speak(text, rate=1){ return new Promise(res=>{
 });}
 
 // ==================== 状態 ====================
-const S = { asrErr:"", phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
-let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, t0=0, speechStart=null;
+const S = { asrErr:"", paused:false, phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
+let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, t0=0, speechStart=null, stopRec=null;
+const AUTO = ()=>!!store.get("auto_next", false);   // 自動で次へ（既定OFF: 自分で「次へ」を押す）
 const cur = ()=>S.list[S.idx];
 
 function el(h){ const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstElementChild; }
@@ -243,8 +249,11 @@ function render(){
       <div class="small" id="keymsg">${k?"保存済み（音声認識モード）":"未設定（デモ採点モード）"}</div>
       <button class="btn" id="savekey">保存して確認</button>
       <button class="btn ghost" id="clearkey">キーを削除（デモ採点に戻す）</button>
+      <div style="margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
+        <span>自動で次へ進む（OFF: 自分で「次へ」を押す）</span><input id="auto" type="checkbox" style="width:22px;height:22px" ${AUTO()?"checked":""}></div>
       <button class="btn ghost" id="back">戻る</button>
     </div>`));
+    document.getElementById("auto").onchange=e=>store.set("auto_next", e.target.checked);
     document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
     document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
     document.getElementById("savekey").onclick=async()=>{
@@ -267,7 +276,7 @@ function render(){
     document.getElementById("re").onclick=()=>location.reload(); return;
   }
   const ch = cur(), st = stepOf(ch.id);
-  const label = {ready:"画面をタップして開始", playing:"聞いて…", recording: st.n===5?"状況を見て、英語で！":"話して！", scoring:"採点中…", result:""}[S.phase] ?? "";
+  const label = {ready:"画面をタップして開始", playing:"聞いて…", recording: st.n===5?"状況を見て、英語で！":"話して！", scoring:"採点中…", result:"", paused:"止めています。「再録」で録音、「次へ」で進む"}[S.phase] ?? "";
   const showEn = st.showEn || S.reveal;
   const words = ch.en.split(/\s+/).map((w,i)=>{
     let cls=""; if (S.detail){ const a=S.detail[i]?.acc ?? 100; cls = a>=80?"g":a>=60?"y":"r"; }
@@ -281,10 +290,33 @@ function render(){
     <div class="scene">${S.phase==="ready"?`<div class="tap"><b>▶</b><span>${label}</span></div>`:`<div class="sit" style="padding:0 16px">${esc(st.hint)}</div>`}</div>
     <div class="body">${st.n===5&&!S.reveal?jpHtml+enHtml:enHtml+jpHtml}${stepbar}<div class="status ${S.phase==="recording"?"rec":""}">${label}</div></div>
     <div class="wave"><div class="lbl"><b>Native</b><i>You</i></div><canvas id="cv"></canvas></div>
+    ${controlsHtml()}
     ${S.phase==="result"&&S.result?overlayHtml():""}
   </div>`));
-  drawWave();
+  drawWave(); bindControls();
 }
+function controlsHtml(){
+  const busy = S.phase==="playing"||S.phase==="recording"||S.phase==="scoring";
+  if (S.phase==="ready") return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-quit">✕ 終了</button></div>`;
+  if (busy) return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-stop" class="stop">■ 止める</button></div>`;
+  // result / paused: 何も自動で進まない
+  return `<div class="ctl"><button id="c-model">🔊 お手本</button><button id="c-redo">↻ 再録</button><button id="c-next" class="pri">次へ ▶</button><button id="c-quit">✕</button></div>`;
+}
+function bindControls(){
+  const on=(id,fn)=>{ const b=document.getElementById(id); if(b) b.onpointerdown=e=>{ e.stopPropagation(); e.preventDefault(); fn(); }; };
+  on("c-model", replayModel); on("c-stop", stopNow); on("c-redo", ()=>startItem()); on("c-next", ()=>next()); on("c-quit", finishSession);
+}
+// お手本を聞く: 録音中なら録音を破棄して止め、通常速度で読み上げ。終わったら待機（勝手に録音は始めない）
+async function replayModel(){
+  if (S.phase==="recording") cancelRecording();
+  if (S.phase==="scoring") return;
+  speechSynthesis.cancel();
+  const ch=cur(), st=stepOf(ch.id); S.reveal = true; S.paused=true; S.phase="paused"; render();
+  await speak(ch.en, st.n<=2 ? st.rate : 1.0);
+}
+// 止める: 録音・再生を即中断して待機
+function stopNow(){ speechSynthesis.cancel(); if (S.phase==="recording") cancelRecording(); S.paused=true; S.phase="paused"; S.reveal=true; render(); }
+function cancelRecording(){ if (stopRec) { const f=stopRec; stopRec=null; f(); } }
 function overlayHtml(){
   const r=S.result, c = r.ok?"var(--good)":"var(--bad)";
   return `<div class="overlay ${r.ok?"flash":""}"><div class="n" style="color:${c}">${r.overall}</div>
@@ -295,7 +327,7 @@ function overlayHtml(){
 }
 function drawWave(){
   const cv=document.getElementById("cv"); if(!cv) return;
-  const dpr=devicePixelRatio||1, w=cv.clientWidth, h=110; cv.width=w*dpr; cv.height=h*dpr;
+  const dpr=devicePixelRatio||1, w=cv.clientWidth, h=80; cv.width=w*dpr; cv.height=h*dpr;
   const g=cv.getContext("2d"); g.scale(dpr,dpr); g.clearRect(0,0,w,h);
   const n=Math.max(S.refWave.length,S.userWave.length,1), bw=w/n, mid=h/2;
   const norm=a=>{const m=Math.max(...a,.0001);return a.map(v=>v/m);};
@@ -328,12 +360,13 @@ async function onFirstTap(){
     const AC = window.AudioContext||window.webkitAudioContext; actx ??= new AC(); await actx.resume();
     stream ??= await navigator.mediaDevices.getUserMedia({audio:true});
     tone(523,.08);
-    clearInterval(timer); timer=setInterval(()=>{ S.remain--; if(S.remain<=0){ finishSession(); } else { const g=document.querySelector(".gauge>i"); if(g) g.style.width=S.remain/SESSION_SEC*100+"%"; } },1000);
+    clearInterval(timer); timer=setInterval(()=>{ if(!(S.phase==="playing"||S.phase==="recording"||S.phase==="scoring")) return; S.remain--; if(S.remain<=0){ finishSession(); } else { const g=document.querySelector(".gauge>i"); if(g) g.style.width=S.remain/SESSION_SEC*100+"%"; } },1000);
     await startItem();
   }catch(e){ S.phase="error"; S.err="初期化に失敗: "+e.message; render(); }
 }
 async function startItem(){
   const ch = cur(), st = stepOf(ch.id);
+  speechSynthesis.cancel(); cancelRecording(); S.paused=false;
   S.t = timings(ch.en, st.rate); S.result=null; S.detail=null; S.userWave=[]; S.reveal=false;
   const end=S.t.at(-1)[2]; S.refWave = Array.from({length:Math.ceil(end/.05)},(_,i)=>{const t=i*.05; return S.t.some(w=>t>=w[1]&&t<w[2]) ? .5+.4*Math.abs(Math.sin(i*1.7)) : .05;});
   if (st.playFirst){ S.phase="playing"; render(); await speak(ch.en, st.rate); }
@@ -350,7 +383,8 @@ function startRecording(){
   let speaking=false, lastVoice=0, ended=false;
   // 電車内などの騒音対策: 録音開始から300msの環境音RMSを測り、閾値を環境音の2.5倍（下限 VAD_TH）に自動調整
   let th=VAD_TH, calN=0, calSum=0; const CAL_MS=300;
-  const finish=()=>{ if(ended) return; ended=true; clearInterval(vadTimer); clearInterval(waveTimer);
+  stopRec=()=>{ if(ended) return; ended=true; clearInterval(vadTimer); clearInterval(waveTimer); try{proc.disconnect(); src.disconnect(); an.disconnect();}catch{} };
+  const finish=()=>{ if(ended) return; ended=true; stopRec=null; clearInterval(vadTimer); clearInterval(waveTimer);
     try{proc.disconnect(); src.disconnect(); an.disconnect();}catch{}
     const total=chunksArr.reduce((a,c)=>a+c.length,0), merged=new Float32Array(total); let o=0; for(const c of chunksArr){merged.set(c,o);o+=c.length;}
     onRecorded(merged, actx.sampleRate); };
@@ -379,9 +413,10 @@ async function onRecorded(samples, sr){
   tone(r.overall>=90?880:u.ok?660:330, u.ok?.15:.08);
   S.phase="result"; render();
   if (st.n>=4 || !u.ok){ await speak(ch.en, 1.0); }           // 見ないで／状況即答／不合格時はお手本をもう一度
-  setTimeout(next, st.n>=4||!u.ok ? 400 : 1000);
+  if (AUTO()) setTimeout(()=>{ if(S.phase==="result") next(); }, 1200);   // 既定は手動: 「次へ」を押すまで止まる
 }
 async function next(){
+  if (S.phase==="scoring") return;
   if (S.idx+1>=S.list.length){ finishSession(); return; }
   S.idx++; await startItem();
 }
