@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.10"></script>
+<script src="curriculum.js?v=2026.11.15.11"></script>
 <script>
-const APP_VERSION = "2026.11.15.10";
+const APP_VERSION = "2026.11.15.11";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -200,6 +200,10 @@ function stepUpdate(p, overall, reactionMs){
 
 // ==================== 音 ====================
 let actx=null, stream=null;
+const MIC_CONS={audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}};
+const MICOFF = ()=>store.get("mic_off_play", true)!==false;   // お手本再生中はマイクを離す（iPhoneの小音量・受話口対策）
+function micOff(){ try{ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }catch{} }
+async function micOn(){ if(!stream || stream.getTracks().every(t=>t.readyState==="ended")){ stream=await navigator.mediaDevices.getUserMedia(MIC_CONS); } return stream; }
 function tone(f, d=0.15){ try{ const o=actx.createOscillator(), g=actx.createGain(); o.frequency.value=f; g.gain.setValueAtTime(.0001,actx.currentTime); g.gain.exponentialRampToValueAtTime(.3,actx.currentTime+.01); g.gain.exponentialRampToValueAtTime(.0001,actx.currentTime+d); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime+d);}catch{} }
 function pickVoice(){
   const vs = speechSynthesis.getVoices();
@@ -273,6 +277,7 @@ async function speak(text, rate=1){
     const {buf,cached}=await ttsFetch(text, rate);
     if(gen!==ttsGen) return;
     S.voice="ネイティブ"+(cached?"（保存済み）":"（生成 "+Math.round(performance.now()-t)+"ms）"); const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice;
+    if(MICOFF() && S.phase!=="recording") micOff();
     await playBuf(buf); { const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; }
   }catch(e){ console.warn("native tts fallback:", e.message); S.voice="端末音声（ネイティブ失敗: "+e.message+"）"; const v=document.getElementById("voicesrc"); if(v) v.textContent="音声: "+S.voice; if(gen===ttsGen) return speakLocal(text, rate); }
 }
@@ -356,12 +361,17 @@ function render(){
         <span>自動で次へ進む（OFF: 自分で「次へ」を押す）</span><input id="auto" type="checkbox" style="width:22px;height:22px" ${AUTO()?"checked":""}></div>
       <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
         <span>ネイティブ音声（OpenAI・要キー）<br><small style="color:var(--mute)">${getKey()?"ON時はネイティブ音声、OFF/失敗時は端末の音声。生成した音は端末に保存され再課金なし":"キーを保存すると使えます"}</small></span><input id="native" type="checkbox" style="width:22px;height:22px" ${NATIVE()?"checked":""}></div>
+      <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
+        <span>お手本の再生中はマイクを離す<br><small style="color:var(--mute)">iPhoneで音が小さい・雑音のように聞こえる時はON（推奨）</small></span><input id="micoff" type="checkbox" style="width:22px;height:22px" ${MICOFF()?"checked":""}></div>
+      <button class="btn ghost" id="clearvoice">保存した音声を削除（作り直す）</button>
       <button class="btn ghost" id="voicetest">🔊 音声テスト（Hello, welcome to our hotel.）</button><p class="small" id="voicemsg" style="color:var(--muted)">${S.voice?"前回の音声: "+esc(S.voice):""}</p>
       <button class="btn ghost" id="back">戻る</button>
     </div>`));
     document.getElementById("auto").onchange=e=>store.set("auto_next", e.target.checked);
     document.getElementById("native").onchange=e=>store.set("native_voice", e.target.checked);
-    document.getElementById("voicetest").onclick=async()=>{ const m=document.getElementById("voicemsg"); m.textContent="再生中…"; unlockAudio(); stopSpeak(); await speak("Hello, welcome to our hotel.",1); m.textContent="結果: "+(S.voice||"不明"); };
+    document.getElementById("micoff").onchange=e=>store.set("mic_off_play", e.target.checked);
+    document.getElementById("clearvoice").onclick=async()=>{ try{ await caches.delete("tts-v1"); document.getElementById("voicemsg").textContent="保存した音声を削除しました（次回から作り直します）"; }catch(e){ document.getElementById("voicemsg").textContent="削除できません: "+e.message; } };
+    document.getElementById("voicetest").onclick=async()=>{ const m=document.getElementById("voicemsg"); m.textContent="再生中…"; unlockAudio(); stopSpeak(); if(MICOFF()) micOff(); await speak("Hello, welcome to our hotel.",1); m.textContent="結果: "+(S.voice||"不明"); };
     document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
     document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
     document.getElementById("savekey").onclick=async()=>{
@@ -483,6 +493,11 @@ async function startItem(){
   startRecording();
 }
 function startRecording(){
+  if(!stream || stream.getTracks().every(t=>t.readyState==="ended")){
+    S.phase="recording"; render();
+    micOn().then(()=>{ if(S.phase==="recording") startRecording(); }).catch(e=>{ S.phase="error"; S.err="マイクを再取得できません: "+e.message; render(); });
+    return;
+  }
   t0=performance.now(); speechStart=null; S.userWave=[]; S.phase="recording"; render();
   const chunksArr=[]; src=actx.createMediaStreamSource(stream); proc=actx.createScriptProcessor(4096,1,1);
   proc.onaudioprocess=e=>chunksArr.push(new Float32Array(e.inputBuffer.getChannelData(0)));
