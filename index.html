@@ -66,8 +66,12 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2"></script>
+<script src="curriculum.js?v=2026.11.15.2"></script>
 <script>
+const APP_VERSION = "2026.11.15.2";
+// 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
+(async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
+  if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
 // ==================== カリキュラム → 学習項目 ====================
 const CUR = window.CURRICULUM;
 const STEPS = CUR.steps;                       // 1..5
@@ -170,7 +174,7 @@ function render(){
   if (S.phase==="permission"){
     app.replaceChildren(el(`<div class="center">
       <div style="font-size:48px">🎙️</div><h1>マイクと音声を有効にする</h1>
-      <p>初回のみ必要です。次回からは開くだけで学習が始まります。イヤホン推奨。</p>
+      <p>初回のみ必要です。次回からは開くだけで学習が始まります。イヤホン推奨。</p><p class="small">3か月カリキュラム版 v${APP_VERSION}</p>
       <button class="btn" id="perm">有効にする</button>${S.err?`<p class="err">${esc(S.err)}</p>`:""}</div>`));
     document.getElementById("perm").onclick = requestPermission; return;
   }
@@ -186,6 +190,7 @@ function render(){
       <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
       <button class="btn" id="go">はじめる（約5分）</button>
       <div class="small">ステップ: 意味＋ゆっくり → いっしょに → ひとりで → 見ないで → 状況で即答</div>
+      <div class="small">v${APP_VERSION}</div>
     </div>`));
     document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; }; return;
   }
