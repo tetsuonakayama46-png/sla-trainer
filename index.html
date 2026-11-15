@@ -66,14 +66,24 @@
   .ctl button{flex:1;padding:12px 6px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg);font-size:14px;font-weight:600;font-family:inherit}
   .ctl button.pri{background:var(--accent);border-color:var(--accent);color:#fff} .ctl button.stop{border-color:var(--bad);color:var(--bad)} .ctl button:active{transform:scale(.96)}
   .overlay{pointer-events:none}
+  .cur{height:100%;overflow:auto;padding:16px max(16px,env(safe-area-inset-left)) 24px;-webkit-overflow-scrolling:touch}
+  .cur h1{font-size:20px;margin:0 0 4px} .cur .ph{margin-top:18px;font-size:12px;color:var(--native);letter-spacing:.1em;text-transform:uppercase}
+  .cur .wkrow{display:flex;align-items:center;gap:10px;padding:10px 12px;margin-top:8px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+  .cur .wkrow.now{border-color:var(--accent);box-shadow:0 0 0 2px rgba(108,124,255,.25)} .cur .wkrow.done{opacity:.75}
+  .cur .wkrow .n{width:34px;font-size:12px;color:var(--muted)} .cur .wkrow .t{flex:1;font-size:14px;font-weight:600} .cur .wkrow .t small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin-top:2px}
+  .cur .wkrow .pct{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;width:40px;text-align:right}
+  .cur .tag{font-size:10px;padding:2px 8px;border-radius:999px;background:var(--accent);color:#fff;font-weight:700}
+  .cur .items{margin:4px 0 0 44px;display:flex;flex-direction:column;gap:6px} .cur .it{display:flex;align-items:center;gap:8px;font-size:13px} .cur .it .en{flex:1} .cur .it .jp{color:var(--muted);font-size:11px}
+  .cur .dots{display:flex;gap:3px} .cur .dots i{width:8px;height:8px;border-radius:50%;background:var(--line)} .cur .dots i.on{background:var(--good)} .cur .dots i.here{background:var(--accent)}
+  .cur .legend{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.7}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.4"></script>
+<script src="curriculum.js?v=2026.11.15.5"></script>
 <script>
-const APP_VERSION = "2026.11.15.4";
+const APP_VERSION = "2026.11.15.5";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -233,11 +243,39 @@ function render(){
       <div class="bar"><i style="width:${pct}%"></i></div>
       <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
       <button class="btn" id="go">はじめる（約5分）</button>
+      <button class="btn ghost" id="showcur" style="margin-top:6px">カリキュラム全体と進捗を見る</button>
       <div class="small">ステップ: 意味＋ゆっくり → いっしょに → ひとりで → 見ないで → 状況で即答</div>
       <div class="small">採点: ${getKey()?"音声認識":"デモ（<a id=\"openset\" style=\"color:var(--native)\">設定でキーを入れる</a>）"} ・ v${APP_VERSION} ・ <a id="openset2" style="color:var(--muted);text-decoration:underline">設定</a></div>
     </div>`));
     document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; };
+    document.getElementById("showcur").onclick=()=>{ S.openWeek=null; S.phase="curriculum"; render(); };
     for (const id of ["openset","openset2"]){ const a=document.getElementById(id); if(a) a.onclick=()=>{ S.phase="settings"; render(); }; }
+    return;
+  }
+  if (S.phase==="curriculum"){
+    const op=overallProgress(), nowW=S.week, open=S.openWeek ?? nowW;
+    const weekPct = w => { const its=ITEMS.filter(i=>i.week===w); return Math.round(its.filter(i=>prog(i.id).step>=3).length/its.length*100); };
+    const weekTouched = w => ITEMS.filter(i=>i.week===w && prog(i.id).n>0).length;
+    let html = `<div class="cur"><button class="btn ghost" id="back" style="margin:0 0 10px;padding:8px 14px">← 戻る</button>
+      <h1>3か月カリキュラム</h1>
+      <div class="bar"><i style="width:${Math.round(op.mid/op.total*100)}%"></i></div>
+      <div class="legend">全${op.total}文 ・ 「ひとりで」以上 ${op.mid}文 ・ 「状況で即答」到達 ${op.done}文 ・ 今は <b style="color:var(--fg)">Week ${nowW}</b>（開始から${startDate?Math.floor((Date.now()-startDate)/864e5):0}日目）<br>● 緑＝到達したステップ ・ ● 青＝今いるステップ ・ 週の%＝「ひとりで」以上の文の割合（70%で次週へ）</div>`;
+    for (const ph of CUR.phases){
+      html += `<div class="ph">フェーズ${ph.id} ${esc(ph.name)} ・ ${esc(ph.goal)}</div>`;
+      for (const w of CUR.weeks.filter(w=>w.phase===ph.id)){
+        const pct=weekPct(w.week), cls = w.week===nowW?"now": pct>=70?"done":"";
+        html += `<div class="wkrow ${cls}" data-w="${w.week}"><span class="n">W${w.week}</span><span class="t">${esc(w.title)}<small>${w.items.length}文 ・ 着手 ${weekTouched(w.week)}文</small></span>${w.week===nowW?`<span class="tag">今ここ</span>`:""}<span class="pct">${pct}%</span></div>`;
+        if (w.week===open){
+          html += `<div class="items">` + w.items.map(it=>{ const pr=prog(it.id); const st=pr.n? pr.step : 0;
+            return `<div class="it"><span class="dots">${[1,2,3,4,5].map(k=>`<i class="${k<st?"on":k===st?"here":""}"></i>`).join("")}</span><span class="en">${esc(it.en)}</span><span class="jp">${esc(it.jp)}</span></div>`; }).join("") + `</div>`;
+        }
+      }
+    }
+    html += `</div>`;
+    app.replaceChildren(el(html));
+    document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
+    for (const row of app.querySelectorAll(".wkrow")) row.onclick=()=>{ const w=+row.dataset.w; S.openWeek = (S.openWeek===w? -1 : w); render(); const r=app.querySelector(`.wkrow[data-w="${w}"]`); if(r) r.scrollIntoView({block:"start",behavior:"smooth"}); };
+    const nowRow = app.querySelector(".wkrow.now"); if (nowRow && S.openWeek==null) nowRow.scrollIntoView({block:"center"});
     return;
   }
   if (S.phase==="settings"){
@@ -268,8 +306,9 @@ function render(){
     const op=overallProgress();
     app.replaceChildren(el(`<div class="center"><div class="big">DONE</div>
       <p>最大コンボ ${S.comboMax} ・ 連続 ${streak.days} 日目<br>「ひとりで」以上: ${op.mid}/${op.total}文</p>
-      <button class="btn ghost" id="again">もう1セット</button></div>`));
-    document.getElementById("again").onclick = ()=>{ startSession(); }; return;
+      <button class="btn ghost" id="again">メニューへ</button><button class="btn ghost" id="fincur">カリキュラム全体と進捗</button></div>`));
+    document.getElementById("again").onclick = ()=>{ startSession(); };
+    document.getElementById("fincur").onclick = ()=>{ S.week=currentWeek(); S.openWeek=null; S.phase="curriculum"; render(); }; return;
   }
   if (S.phase==="error"){
     app.replaceChildren(el(`<div class="center"><p class="err">${esc(S.err)}</p><button class="btn ghost" id="re">再読み込み</button></div>`));
