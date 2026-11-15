@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.7"></script>
+<script src="curriculum.js?v=2026.11.15.8"></script>
 <script>
-const APP_VERSION = "2026.11.15.7";
+const APP_VERSION = "2026.11.15.8";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -206,12 +206,43 @@ function pickVoice(){
   return vs.find(v=>/en[-_]US/i.test(v.lang)&&/natural|neural|premium|enhanced|samantha|aria|zira|google us/i.test(v.name))
       || vs.find(v=>/en[-_]US/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || null;
 }
-function speak(text, rate=1){ return new Promise(res=>{
+function speakLocal(text, rate=1){ return new Promise(res=>{
   const u = new SpeechSynthesisUtterance(text); u.lang="en-US"; u.rate=rate; const v=pickVoice(); if(v) u.voice=v;
   let done=false; const fin=()=>{ if(!done){done=true;res();} };
   u.onend=fin; u.onerror=fin; speechSynthesis.cancel(); speechSynthesis.speak(u);
   setTimeout(fin, 1500 + text.length*90/rate);
 });}
+// ---- ネイティブ音声（OpenAI TTS）。鍵があれば使い、生成した音声は端末にキャッシュ（同じ文は再課金なし）----
+const NATIVE = ()=>store.get("native_voice", true)!==false;
+const TTS_MODEL="tts-1-hd", TTS_VOICE="nova";
+let ttsSrc=null, ttsGen=0;
+function stopSpeak(){ speechSynthesis.cancel(); ttsGen++; if(ttsSrc){ try{ttsSrc.stop();}catch{} ttsSrc=null; } }
+async function ttsFetch(text, rate){
+  const key=getKey(); if(!key) throw new Error("no key");
+  const url=location.origin+"/__tts/"+encodeURIComponent(TTS_MODEL+"|"+TTS_VOICE+"|"+rate+"|"+text);
+  let cache=null; try{ cache=await caches.open("tts-v1"); const hit=await cache.match(url); if(hit) return await hit.arrayBuffer(); }catch{}
+  const ctl=new AbortController(); const tm=setTimeout(()=>ctl.abort(),15000);
+  const r=await fetch("https://api.openai.com/v1/audio/speech",{method:"POST",signal:ctl.signal,
+    headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},
+    body:JSON.stringify({model:TTS_MODEL,voice:TTS_VOICE,input:text,speed:rate,response_format:"mp3"})});
+  clearTimeout(tm);
+  if(!r.ok) throw new Error("tts "+r.status);
+  const buf=await r.arrayBuffer();
+  try{ if(cache) await cache.put(url,new Response(buf.slice(0),{headers:{"Content-Type":"audio/mpeg"}})); }catch{}
+  return buf;
+}
+async function speak(text, rate=1){
+  if(!(NATIVE()&&getKey()&&actx)) return speakLocal(text, rate);
+  const gen=++ttsGen;
+  try{
+    const buf=await ttsFetch(text, rate);
+    if(gen!==ttsGen) return;
+    const ab=await actx.decodeAudioData(buf.slice(0));
+    if(gen!==ttsGen) return;
+    if(actx.state==="suspended") await actx.resume();
+    await new Promise(res=>{ const src=actx.createBufferSource(); src.buffer=ab; src.connect(actx.destination); ttsSrc=src; let done=false; const fin=()=>{ if(!done){done=true; if(ttsSrc===src) ttsSrc=null; res();} }; src.onended=fin; src.start(); setTimeout(fin, ab.duration*1000+800); });
+  }catch(e){ console.warn("native tts fallback:", e.message); S.ttsErr=String(e.message); if(gen===ttsGen) return speakLocal(text, rate); }
+}
 
 // ==================== 状態 ====================
 const S = { asrErr:"", paused:false, phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
@@ -290,9 +321,12 @@ function render(){
       <button class="btn ghost" id="clearkey">キーを削除（デモ採点に戻す）</button>
       <div style="margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
         <span>自動で次へ進む（OFF: 自分で「次へ」を押す）</span><input id="auto" type="checkbox" style="width:22px;height:22px" ${AUTO()?"checked":""}></div>
+      <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
+        <span>ネイティブ音声（OpenAI・要キー）<br><small style="color:var(--mute)">${getKey()?"ON時はネイティブ音声、OFF/失敗時は端末の音声。生成した音は端末に保存され再課金なし":"キーを保存すると使えます"}</small></span><input id="native" type="checkbox" style="width:22px;height:22px" ${NATIVE()?"checked":""}></div>
       <button class="btn ghost" id="back">戻る</button>
     </div>`));
     document.getElementById("auto").onchange=e=>store.set("auto_next", e.target.checked);
+    document.getElementById("native").onchange=e=>store.set("native_voice", e.target.checked);
     document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
     document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
     document.getElementById("savekey").onclick=async()=>{
@@ -350,12 +384,12 @@ function bindControls(){
 async function replayModel(){
   if (S.phase==="recording") cancelRecording();
   if (S.phase==="scoring") return;
-  speechSynthesis.cancel();
+  stopSpeak();
   const ch=cur(), st=stepOf(ch.id); S.reveal = true; S.paused=true; S.phase="paused"; render();
   await speak(ch.en, st.n<=2 ? st.rate : 1.0);
 }
 // 止める: 録音・再生を即中断して待機
-function stopNow(){ speechSynthesis.cancel(); if (S.phase==="recording") cancelRecording(); S.paused=true; S.phase="paused"; S.reveal=true; render(); }
+function stopNow(){ stopSpeak(); if (S.phase==="recording") cancelRecording(); S.paused=true; S.phase="paused"; S.reveal=true; render(); }
 function cancelRecording(){ if (stopRec) { const f=stopRec; stopRec=null; f(); } }
 function overlayHtml(){
   const r=S.result, c = r.ok?"var(--good)":"var(--bad)";
@@ -406,7 +440,7 @@ async function onFirstTap(){
 }
 async function startItem(){
   const ch = cur(), st = stepOf(ch.id);
-  speechSynthesis.cancel(); cancelRecording(); S.paused=false;
+  stopSpeak(); cancelRecording(); S.paused=false;
   S.t = timings(ch.en, st.rate); S.result=null; S.detail=null; S.userWave=[]; S.reveal=false;
   const end=S.t.at(-1)[2]; S.refWave = Array.from({length:Math.ceil(end/.05)},(_,i)=>{const t=i*.05; return S.t.some(w=>t>=w[1]&&t<w[2]) ? .5+.4*Math.abs(Math.sin(i*1.7)) : .05;});
   if (st.playFirst){ S.phase="playing"; render(); await speak(ch.en, st.rate); }
@@ -460,7 +494,7 @@ async function next(){
   if (S.idx+1>=S.list.length){ finishSession(); return; }
   S.idx++; await startItem();
 }
-function finishSession(){ clearInterval(timer); clearInterval(vadTimer); clearInterval(waveTimer); speechSynthesis.cancel(); S.phase="finished"; render(); }
+function finishSession(){ clearInterval(timer); clearInterval(vadTimer); clearInterval(waveTimer); stopSpeak(); S.phase="finished"; render(); }
 
 // ==================== 起動 ====================
 (function boot(){
