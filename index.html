@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.12"></script>
+<script src="curriculum.js?v=2026.11.15.13"></script>
 <script>
-const APP_VERSION = "2026.11.15.12";
+const APP_VERSION = "2026.11.15.13";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -201,7 +201,7 @@ function stepUpdate(p, overall, reactionMs){
 // ==================== 音 ====================
 let actx=null, stream=null;
 const MIC_CONS={audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}};
-const MICOFF = ()=>store.get("mic_off_play", true)!==false;   // お手本再生中はマイクを離す（iPhoneの小音量・受話口対策）
+const MICOFF = ()=>store.get("mic_off_play", false)===true;   // お手本再生中はマイクを離す（iPhoneの小音量・受話口対策）
 function micOff(){ try{ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }catch{} }
 async function micOn(){ if(!stream || stream.getTracks().every(t=>t.readyState==="ended")){ stream=await navigator.mediaDevices.getUserMedia(MIC_CONS); } return stream; }
 function tone(f, d=0.15){ try{ const o=actx.createOscillator(), g=actx.createGain(); o.frequency.value=f; g.gain.setValueAtTime(.0001,actx.currentTime); g.gain.exponentialRampToValueAtTime(.3,actx.currentTime+.01); g.gain.exponentialRampToValueAtTime(.0001,actx.currentTime+d); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime+d);}catch{} }
@@ -223,10 +223,19 @@ const NATIVE = ()=>store.get("native_voice", true)!==false;
 const TTS_MODEL="tts-1-hd", TTS_VOICE="nova";
 let ttsSrc=null, ttsGen=0;
 function stopSpeak(){ speechSynthesis.cancel(); ttsGen++; stopAudioEl(); }
+const TTS_CACHE="tts-v2";
 async function ttsFetch(text, rate){
   const key=getKey(); if(!key) throw new Error("no key");
   const url=location.origin+"/__tts/"+encodeURIComponent(TTS_MODEL+"|"+TTS_VOICE+"|"+rate+"|"+text);
-  let cache=null; try{ cache=await caches.open("tts-v1"); const hit=await cache.match(url); if(hit) return {buf:await hit.arrayBuffer(),cached:true}; }catch{}
+  let cache=null;
+  try{ caches.delete("tts-v1"); }catch{}
+  try{ cache=await caches.open(TTS_CACHE); const hit=await cache.match(url);
+    if(hit){ const b=await hit.arrayBuffer(); const want=Number(hit.headers.get("x-len")||0);
+      let ok = b.byteLength>1000 && (!want || want===b.byteLength);
+      if(ok && actx){ try{ await actx.decodeAudioData(b.slice(0)); }catch{ ok=false; } }
+      if(ok) return {buf:b,cached:true};
+      try{ await cache.delete(url); }catch{}
+    } }catch{}
   const ctl=new AbortController(); const tm=setTimeout(()=>ctl.abort(),15000);
   const r=await fetch("https://api.openai.com/v1/audio/speech",{method:"POST",signal:ctl.signal,
     headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},
@@ -234,7 +243,8 @@ async function ttsFetch(text, rate){
   clearTimeout(tm);
   if(!r.ok){ let d=""; try{ d=(await r.json()).error?.message||""; }catch{} throw new Error("HTTP "+r.status+(d?" "+d.slice(0,80):"")); }
   const buf=await r.arrayBuffer();
-  try{ if(cache) await cache.put(url,new Response(buf.slice(0),{headers:{"Content-Type":"audio/mpeg"}})); }catch{}
+  if(buf.byteLength<1000) throw new Error("tts response too short");
+  try{ if(cache) await cache.put(url,new Response(new Blob([buf],{type:"audio/mpeg"}),{headers:{"Content-Type":"audio/mpeg","x-len":String(buf.byteLength)}})); }catch{}
   return {buf,cached:false};
 }
 // <audio>要素はユーザー操作時に一度無音を再生して解錠しておく（iOS対策）
@@ -362,7 +372,7 @@ function render(){
       <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
         <span>ネイティブ音声（OpenAI・要キー）<br><small style="color:var(--mute)">${getKey()?"ON時はネイティブ音声、OFF/失敗時は端末の音声。生成した音は端末に保存され再課金なし":"キーを保存すると使えます"}</small></span><input id="native" type="checkbox" style="width:22px;height:22px" ${NATIVE()?"checked":""}></div>
       <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:12px;display:flex;justify-content:space-between;align-items:center">
-        <span>お手本の再生中はマイクを離す<br><small style="color:var(--mute)">iPhoneで音が小さい・雑音のように聞こえる時はON（推奨）</small></span><input id="micoff" type="checkbox" style="width:22px;height:22px" ${MICOFF()?"checked":""}></div>
+        <span>お手本の再生中はマイクを離す<br><small style="color:var(--mute)">通常はOFF。音が小さい時だけ試す</small></span><input id="micoff" type="checkbox" style="width:22px;height:22px" ${MICOFF()?"checked":""}></div>
       <button class="btn ghost" id="clearvoice">保存した音声を削除（作り直す）</button>
       <button class="btn ghost" id="voicetest">🔊 音声テスト（Hello, welcome to our hotel.）</button><p class="small" id="voicemsg" style="color:var(--muted)">${S.voice?"前回の音声: "+esc(S.voice):""}</p>
       <button class="btn ghost" id="back">戻る</button>
@@ -370,7 +380,7 @@ function render(){
     document.getElementById("auto").onchange=e=>store.set("auto_next", e.target.checked);
     document.getElementById("native").onchange=e=>store.set("native_voice", e.target.checked);
     document.getElementById("micoff").onchange=e=>store.set("mic_off_play", e.target.checked);
-    document.getElementById("clearvoice").onclick=async()=>{ try{ await caches.delete("tts-v1"); document.getElementById("voicemsg").textContent="保存した音声を削除しました（次回から作り直します）"; }catch(e){ document.getElementById("voicemsg").textContent="削除できません: "+e.message; } };
+    document.getElementById("clearvoice").onclick=async()=>{ try{ await caches.delete(TTS_CACHE); document.getElementById("voicemsg").textContent="保存した音声を削除しました（次回から作り直します）"; }catch(e){ document.getElementById("voicemsg").textContent="削除できません: "+e.message; } };
     document.getElementById("voicetest").onclick=async()=>{ const m=document.getElementById("voicemsg"); m.textContent="再生中…"; unlockAudio(); stopSpeak(); if(MICOFF()) micOff(); await speak("Hello, welcome to our hotel.",1); m.textContent="結果: "+(S.voice||"不明"); };
     document.getElementById("back").onclick=()=>{ S.phase="menu"; render(); };
     document.getElementById("clearkey").onclick=()=>{ store.set("openai_key",""); S.phase="menu"; render(); };
