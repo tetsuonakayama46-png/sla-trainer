@@ -51,63 +51,94 @@
   .btn:active{transform:scale(.96)} .btn.ghost{background:var(--panel);color:var(--fg);font-size:15px;padding:12px 22px}
   .big{font-size:64px;font-weight:900;color:var(--good)}
   .err{color:var(--bad);font-weight:600}
+  .jp{font-size:clamp(16px,4.5vw,20px);color:var(--muted);text-align:center;line-height:1.5}
+  .jp.big{font-size:clamp(22px,6vw,28px);color:var(--fg);font-weight:700}
+  .sit{font-size:12px;color:var(--native);text-align:center;letter-spacing:.06em}
+  .stepbar{display:flex;gap:4px;justify-content:center;margin-top:2px} .stepbar i{width:18px;height:4px;border-radius:2px;background:var(--line)} .stepbar i.on{background:var(--accent)}
+  .menu{height:100%;display:flex;flex-direction:column;justify-content:center;padding:24px max(16px,env(safe-area-inset-left));gap:12px}
+  .menu .wk{font-size:12px;color:var(--native);letter-spacing:.1em;text-transform:uppercase} .menu h1{font-size:24px;margin:0;line-height:1.3}
+  .menu .goal{color:var(--muted);font-size:14px;line-height:1.6;margin:0}
+  .menu .plan{display:flex;gap:10px;margin-top:6px} .menu .plan div{flex:1;background:var(--panel);border-radius:12px;padding:12px;text-align:center} .menu .plan b{display:block;font-size:26px} .menu .plan span{font-size:11px;color:var(--muted)}
+  .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden} .bar i{display:block;height:100%;background:var(--good)}
+  .small{font-size:12px;color:var(--muted);text-align:center}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <div id="app"></div>
+<script src="curriculum.js?v=2"></script>
 <script>
-// ==================== データ（デモ6チャンク） ====================
-const CHUNKS = [
-  {id:"c1", text:"I was gonna say the same thing.", core:"gonna say",
-   t:[["I",0,.12],["was",.12,.28],["gonna",.28,.5],["say",.5,.72],["the",.72,.82],["same",.82,1.1],["thing",1.1,1.5]]},
-  {id:"c2", text:"Do you want it now or later?", core:"want it",
-   t:[["Do",0,.12],["you",.12,.25],["want",.25,.48],["it",.48,.58],["now",.58,.85],["or",.85,.98],["later",.98,1.4]]},
-  {id:"c3", text:"Let me know what you think.", core:"let me know",
-   t:[["Let",0,.18],["me",.18,.3],["know",.3,.55],["what",.55,.72],["you",.72,.85],["think",.85,1.25]]},
-  {id:"c4", text:"That's kind of a big deal.", core:"kind of",
-   t:[["That's",0,.25],["kind",.25,.45],["of",.45,.55],["a",.55,.62],["big",.62,.85],["deal",.85,1.2]]},
-  {id:"c5", text:"I'll get back to you on that.", core:"get back to you",
-   t:[["I'll",0,.18],["get",.18,.35],["back",.35,.6],["to",.6,.7],["you",.7,.85],["on",.85,.98],["that",.98,1.3]]},
-  {id:"c6", text:"You've gotta be kidding me.", core:"gotta be",
-   t:[["You've",0,.22],["gotta",.22,.45],["be",.45,.58],["kidding",.58,.95],["me",.95,1.2]]},
-];
+// ==================== カリキュラム → 学習項目 ====================
+const CUR = window.CURRICULUM;
+const STEPS = CUR.steps;                       // 1..5
 const SESSION_SEC = 300, SILENCE_MS = 700, VAD_TH = 0.02;
+const NEW_PER_DAY = 4, REVIEW_PER_DAY = 4, WEEK_GATE = 0.7;
+// 単語長から参照タイミング（秒）を合成。rate で伸縮。
+function timings(en, rate){ const ws=en.split(/\s+/); let t=0; return ws.map(w=>{ const d=(0.10+0.055*w.replace(/[^A-Za-z']/g,"").length)/rate; const a=t; t+=d; return [w,a,t]; }); }
+const ITEMS = []; const BYID = {};
+for (const w of CUR.weeks) for (const it of w.items){ const o={...it, week:w.week, phase:w.phase}; ITEMS.push(o); BYID[o.id]=o; }
 
 // ==================== 永続化（この端末のみ） ====================
 const store = {
   get(k, d){ try { const v = localStorage.getItem(k); return v==null? d : JSON.parse(v);} catch { return d; } },
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-let progress = store.get("progress", {});   // id -> {stage, fail, hist:[overall...]}
+let progress = store.get("cur_progress", {});   // id -> {step, pass, fail, n, last, best}
 let streak = store.get("streak", {days:0, last:null});
-function prog(id){ return progress[id] ??= {stage:3, fail:0, hist:[]}; }
+let startDate = store.get("cur_start", null);
+function prog(id){ return progress[id] ??= {step:1, pass:0, fail:0, n:0, last:0, best:0}; }
+function stepOf(id){ return STEPS[Math.min(5,Math.max(1,prog(id).step))-1]; }
+
+// ==================== 週の判定（日数＋前週の達成率でゲート） ====================
+function weekDone(week){ const its=ITEMS.filter(i=>i.week===week); if(!its.length) return true; return its.filter(i=>prog(i.id).step>=3).length/its.length >= WEEK_GATE; }
+function currentWeek(){
+  const days = startDate ? Math.floor((Date.now()-startDate)/864e5) : 0;
+  const byDays = Math.min(12, Math.floor(days/7)+1);
+  let w=1; while (w<byDays && weekDone(w)) w++;     // 前週が70%未満なら進まない（復習週）
+  return w;
+}
+function planToday(week){
+  const now=Date.now(), DAY=864e5;
+  // 復習: 途中の文（古い順）＋ 到達済みでも3日以上触っていない文（維持）
+  const started = ITEMS.filter(i=>prog(i.id).n>0 && (prog(i.id).step<5 || now-prog(i.id).last>3*DAY)).sort((a,b)=>prog(a.id).last-prog(b.id).last);
+  const fresh = ITEMS.filter(i=>i.week<=week && prog(i.id).n===0).sort((a,b)=>a.week-b.week);
+  let news = fresh.slice(0, NEW_PER_DAY);
+  let review = started.slice(0, REVIEW_PER_DAY + (NEW_PER_DAY-news.length));
+  // 新しい文は1セッションで2回出す（合格2回で次ステップ）。同じ文が連続しないよう交互に並べる
+  let list=[]; const a=[...news, ...review], b=[...news];
+  while (a.length||b.length){ if(a.length) list.push(a.shift()); if(b.length){ const x=b.shift(); if(list.at(-1)===x) b.push(x); else list.push(x); } }
+  if (!list.length){ list = ITEMS.filter(i=>i.week<=week).sort(()=>Math.random()-.5).slice(0,8); }
+  return { list, review:review.length, news:news.length };
+}
+function overallProgress(){ const done=ITEMS.filter(i=>prog(i.id).step>=5).length, mid=ITEMS.filter(i=>prog(i.id).step>=3).length; return {done, mid, total:ITEMS.length}; }
 
 // ==================== 採点（デモ: 発話長と音量から。音声認識なし） ====================
 function hash(arr){ let h=2166136261; for (let i=0;i<Math.min(arr.length,4000);i++){ h^=(arr[i]*1e4)|0; h=Math.imul(h,16777619);} return h>>>0; }
-function scoreDemo(samples, sr, ch){
+function scoreDemo(samples, sr, t){
   const dur = samples.length/sr;
   let s=0; for (const v of samples) s+=v*v; const rms = Math.sqrt(s/Math.max(1,samples.length));
-  const refDur = ch.t.at(-1)[2]-ch.t[0][1];
+  const refDur = t.at(-1)[2]-t[0][1];
   let base;
   if (dur<0.3 || rms<0.005) base = 20;
   else { const ratio = Math.min(dur, refDur*2.5)/refDur; base = 92 - Math.min(40, Math.abs(ratio-1.1)*45) - (rms>0.02?0:15); }
   base = Math.max(10, Math.min(98, base));
   const h = hash(samples);
-  const words = ch.t.map((w,i)=>{ const j=((h>>(i*3))%23)-11; return {word:w[0], acc:Math.max(0,Math.min(100,base+j))}; });
+  const words = t.map((w,i)=>{ const j=((h>>(i*3))%23)-11; return {word:w[0], acc:Math.max(0,Math.min(100,base+j))}; });
   const wa = words.reduce((a,w)=>a+w.acc,0)/words.length;
   const timing = Math.min(400, Math.abs(dur-refDur)/Math.max(refDur,.1)*150);
   const prosody = Math.max(30, Math.min(95, base+3));
   const overall = 0.6*wa + 0.25*prosody + 0.15*(100-Math.min(timing,300)/3);
   return {overall:Math.round(overall), wa, prosody:Math.round(prosody), timing:Math.round(timing), words};
 }
-// 10段階判定（簡略: 直近3回 overall>=85 で昇段、<60 が2連続で降段）
-function step(p, overall){
-  p.hist = [overall, ...p.hist].slice(0,3);
-  const before = p.stage;
-  if (overall<60){ p.fail++; if (p.fail>=2 && p.stage>1){ p.stage--; p.fail=0; } }
-  else { p.fail=0; if (p.hist.length===3 && p.hist.every(v=>v>=85) && p.stage<10){ p.stage++; p.hist=[]; } }
-  return {before, after:p.stage};
+// 5ステップ判定: 合格2連続で次のステップ、不合格2連続で1つ戻る
+function stepUpdate(p, overall, reactionMs){
+  const st = STEPS[p.step-1]; const before=p.step;
+  let ok = overall >= st.pass;
+  if (p.step===5 && reactionMs!=null && reactionMs>3000) ok=false;   // 状況即答は3秒以内
+  p.n++; p.last=Date.now(); p.best=Math.max(p.best, overall);
+  if (ok){ p.pass++; p.fail=0; if (p.pass>=2 && p.step<5){ p.step++; p.pass=0; } }
+  else { p.fail++; p.pass=0; if (p.fail>=2 && p.step>1){ p.step--; p.fail=0; } }
+  return {before, after:p.step, ok};
 }
 
 // ==================== 音 ====================
@@ -118,63 +149,82 @@ function pickVoice(){
   return vs.find(v=>/en[-_]US/i.test(v.lang)&&/natural|neural|premium|enhanced|samantha|aria|zira|google us/i.test(v.name))
       || vs.find(v=>/en[-_]US/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || null;
 }
-function speak(text){ return new Promise(res=>{
-  const u = new SpeechSynthesisUtterance(text); u.lang="en-US"; u.rate=.95; const v=pickVoice(); if(v) u.voice=v;
+function speak(text, rate=1){ return new Promise(res=>{
+  const u = new SpeechSynthesisUtterance(text); u.lang="en-US"; u.rate=rate; const v=pickVoice(); if(v) u.voice=v;
   let done=false; const fin=()=>{ if(!done){done=true;res();} };
   u.onend=fin; u.onerror=fin; speechSynthesis.cancel(); speechSynthesis.speak(u);
-  setTimeout(fin, 1500 + text.length*90);   // 一部端末で onend が来ない対策
+  setTimeout(fin, 1500 + text.length*90/rate);
 });}
 
 // ==================== 状態 ====================
-const S = { phase:"init", idx:0, order:[], combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"" };
-let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, chunks=[], t0=0, speechStart=null;
+const S = { phase:"init", idx:0, list:[], week:1, plan:null, combo:0, comboMax:0, remain:SESSION_SEC, result:null, detail:null, refWave:[], userWave:[], level:0, err:"", t:null, reveal:false };
+let timer=null, vadTimer=null, waveTimer=null, proc=null, src=null, t0=0, speechStart=null;
+const cur = ()=>S.list[S.idx];
 
 function el(h){ const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstElementChild; }
 const app = document.getElementById("app");
-function esc(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 function render(){
-  const ch = CHUNKS[S.order[S.idx]];
-  if (S.phase==="init"){
-    app.replaceChildren(el(`<div class="center"><p>準備中…</p></div>`)); return;
-  }
+  if (S.phase==="init"){ app.replaceChildren(el(`<div class="center"><p>準備中…</p></div>`)); return; }
   if (S.phase==="permission"){
     app.replaceChildren(el(`<div class="center">
       <div style="font-size:48px">🎙️</div><h1>マイクと音声を有効にする</h1>
-      <p>初回のみ必要です。次回からは開くだけで学習が始まります。</p>
+      <p>初回のみ必要です。次回からは開くだけで学習が始まります。イヤホン推奨。</p>
       <button class="btn" id="perm">有効にする</button>${S.err?`<p class="err">${esc(S.err)}</p>`:""}</div>`));
     document.getElementById("perm").onclick = requestPermission; return;
   }
+  if (S.phase==="menu"){
+    const wk = CUR.weeks.find(w=>w.week===S.week), ph = CUR.phases[wk.phase], op=overallProgress();
+    const pct = Math.round(op.mid/op.total*100);
+    app.replaceChildren(el(`<div class="menu">
+      <div class="wk">Week ${S.week} / 12 ・ フェーズ${ph.id} ${esc(ph.name)}</div>
+      <h1>${esc(wk.title)}</h1>
+      <p class="goal">${esc(ph.goal)}</p>
+      <div class="plan"><div><b>${S.plan.news}</b><span>新しい文</span></div><div><b>${S.plan.review}</b><span>復習</span></div><div><b>${streak.days}</b><span>連続日</span></div></div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
+      <button class="btn" id="go">はじめる（約5分）</button>
+      <div class="small">ステップ: 意味＋ゆっくり → いっしょに → ひとりで → 見ないで → 状況で即答</div>
+    </div>`));
+    document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; }; return;
+  }
   if (S.phase==="finished"){
+    const op=overallProgress();
     app.replaceChildren(el(`<div class="center"><div class="big">DONE</div>
-      <p>最大コンボ ${S.comboMax}<br>連続 ${streak.days} 日目</p>
-      <button class="btn ghost" id="again">もう一度</button></div>`));
+      <p>最大コンボ ${S.comboMax} ・ 連続 ${streak.days} 日目<br>「ひとりで」以上: ${op.mid}/${op.total}文</p>
+      <button class="btn ghost" id="again">もう1セット</button></div>`));
     document.getElementById("again").onclick = ()=>{ startSession(); }; return;
   }
   if (S.phase==="error"){
     app.replaceChildren(el(`<div class="center"><p class="err">${esc(S.err)}</p><button class="btn ghost" id="re">再読み込み</button></div>`));
     document.getElementById("re").onclick=()=>location.reload(); return;
   }
-  const label = {ready:"画面をタップして開始", playing:"聞いて…", recording:"話して！", scoring:"採点中…", result:""}[S.phase] ?? "";
-  const words = ch.text.split(/\s+/).map((w,i)=>{
+  const ch = cur(), st = stepOf(ch.id);
+  const label = {ready:"画面をタップして開始", playing:"聞いて…", recording: st.n===5?"状況を見て、英語で！":"話して！", scoring:"採点中…", result:""}[S.phase] ?? "";
+  const showEn = st.showEn || S.reveal;
+  const words = ch.en.split(/\s+/).map((w,i)=>{
     let cls=""; if (S.detail){ const a=S.detail[i]?.acc ?? 100; cls = a>=80?"g":a>=60?"y":"r"; }
     return `<span class="${cls}">${esc(w)}</span>`; }).join("");
+  const enHtml = showEn ? `<p class="text">${words}</p>` : `<p class="text" style="color:var(--line)">${ch.en.split(/\s+/).map(w=>"•".repeat(Math.max(2,w.length))).join(" ")}</p>`;
+  const jpHtml = st.n===5 && !S.reveal ? `<p class="sit">状況</p><p class="jp big">${esc(ch.sit)}</p>` : (st.showJp || S.reveal) ? `<p class="jp ${st.n<=2?"big":""}">${esc(ch.jp)}</p>` : "";
+  const stepbar = `<div class="stepbar">${STEPS.map(s=>`<i class="${s.n<=st.n?"on":""}"></i>`).join("")}</div>`;
   app.replaceChildren(el(`<div style="display:contents">
     <div class="gauge"><i style="width:${S.remain/SESSION_SEC*100}%"></i></div>
-    <div class="hdr"><span>${S.idx+1} / ${S.order.length}</span><span>Stage ${prog(ch.id).stage}</span><span class="combo">${S.combo>0?S.combo+"x":""}</span></div>
-    <div class="scene">no frame${S.phase==="ready"?`<div class="tap"><b>▶</b><span>${label}</span></div>`:""}</div>
-    <div class="body"><p class="text">${words}</p><div class="status ${S.phase==="recording"?"rec":""}">${label}</div></div>
+    <div class="hdr"><span>${S.idx+1} / ${S.list.length}</span><span>Step ${st.n} ${esc(st.name)}</span><span class="combo">${S.combo>0?S.combo+"x":""}</span></div>
+    <div class="scene">${S.phase==="ready"?`<div class="tap"><b>▶</b><span>${label}</span></div>`:`<div class="sit" style="padding:0 16px">${esc(st.hint)}</div>`}</div>
+    <div class="body">${st.n===5&&!S.reveal?jpHtml+enHtml:enHtml+jpHtml}${stepbar}<div class="status ${S.phase==="recording"?"rec":""}">${label}</div></div>
     <div class="wave"><div class="lbl"><b>Native</b><i>You</i></div><canvas id="cv"></canvas></div>
     ${S.phase==="result"&&S.result?overlayHtml():""}
   </div>`));
   drawWave();
 }
 function overlayHtml(){
-  const r=S.result, c = r.overall>=80?"var(--good)":r.overall>=60?"var(--warn)":"var(--bad)";
-  return `<div class="overlay ${r.overall>=80?"flash":""}"><div class="n" style="color:${c}">${r.overall}</div>
-    <div class="sub"><span>Prosody ${r.prosody}</span><span>Timing ±${r.timing}ms</span><span style="color:var(--warn)">デモ採点</span></div>
+  const r=S.result, c = r.ok?"var(--good)":"var(--bad)";
+  return `<div class="overlay ${r.ok?"flash":""}"><div class="n" style="color:${c}">${r.overall}</div>
+    <div class="sub"><span>${r.ok?"合格":"もう一回"}</span><span>Timing ±${r.timing}ms</span>${r.reaction!=null?`<span>反応 ${(r.reaction/1000).toFixed(1)}s</span>`:""}<span style="color:var(--warn)">デモ採点</span></div>
     ${S.combo>=2?`<div class="combo">${S.combo} COMBO!</div>`:""}
-    ${r.stageAfter>r.stageBefore?`<div class="stage">Stage ${r.stageBefore} → ${r.stageAfter}</div>`:""}</div>`;
+    ${r.stepAfter>r.stepBefore?`<div class="stage">Step ${r.stepBefore} → ${r.stepAfter} ${esc(STEPS[r.stepAfter-1].name)}</div>`:r.stepAfter<r.stepBefore?`<div class="stage" style="background:var(--bad)">Step ${r.stepBefore} → ${r.stepAfter} に戻ってやり直し</div>`:""}</div>`;
 }
 function drawWave(){
   const cv=document.getElementById("cv"); if(!cv) return;
@@ -198,11 +248,12 @@ async function requestPermission(){
   }catch(e){ S.err="マイクの許可が必要です: "+e.message; render(); }
 }
 function startSession(){
-  S.order = CHUNKS.map((_,i)=>i).sort(()=>Math.random()-.5); S.idx=0; S.combo=0; S.comboMax=0; S.remain=SESSION_SEC; S.detail=null; S.result=null; S.userWave=[];
+  if (!startDate){ startDate=Date.now(); store.set("cur_start", startDate); }
+  S.week = currentWeek(); S.plan = planToday(S.week); S.list = S.plan.list;
+  S.idx=0; S.combo=0; S.comboMax=0; S.remain=SESSION_SEC; S.detail=null; S.result=null; S.userWave=[]; S.reveal=false;
   const today = new Date().toISOString().slice(0,10);
   if (streak.last!==today){ const y=new Date(Date.now()-864e5).toISOString().slice(0,10); streak={days: streak.last===y? streak.days+1 : 1, last:today}; store.set("streak",streak); }
-  S.phase="ready"; render();
-  app.onpointerdown = onFirstTap;
+  S.phase="menu"; render();
 }
 async function onFirstTap(){
   if (S.phase!=="ready") return; app.onpointerdown=null;
@@ -211,27 +262,24 @@ async function onFirstTap(){
     stream ??= await navigator.mediaDevices.getUserMedia({audio:true});
     tone(523,.08);
     clearInterval(timer); timer=setInterval(()=>{ S.remain--; if(S.remain<=0){ finishSession(); } else { const g=document.querySelector(".gauge>i"); if(g) g.style.width=S.remain/SESSION_SEC*100+"%"; } },1000);
-    await playRef();
+    await startItem();
   }catch(e){ S.phase="error"; S.err="初期化に失敗: "+e.message; render(); }
 }
-async function playRef(){
-  const ch = CHUNKS[S.order[S.idx]];
-  S.phase="playing"; S.result=null; S.detail=null; S.userWave=[];
-  const end=ch.t.at(-1)[2]; S.refWave = Array.from({length:Math.ceil(end/.05)},(_,i)=>{const t=i*.05; return ch.t.some(w=>t>=w[1]&&t<w[2]) ? .5+.4*Math.abs(Math.sin(i*1.7)) : .05;});
-  render();
-  await speak(ch.text);
+async function startItem(){
+  const ch = cur(), st = stepOf(ch.id);
+  S.t = timings(ch.en, st.rate); S.result=null; S.detail=null; S.userWave=[]; S.reveal=false;
+  const end=S.t.at(-1)[2]; S.refWave = Array.from({length:Math.ceil(end/.05)},(_,i)=>{const t=i*.05; return S.t.some(w=>t>=w[1]&&t<w[2]) ? .5+.4*Math.abs(Math.sin(i*1.7)) : .05;});
+  if (st.playFirst){ S.phase="playing"; render(); await speak(ch.en, st.rate); }
+  else { S.phase="recording"; render(); tone(660,.06); }   // Step5: 状況だけ見て即答
   startRecording();
 }
 function startRecording(){
-  const ch = CHUNKS[S.order[S.idx]];
   t0=performance.now(); speechStart=null; S.userWave=[]; S.phase="recording"; render();
-  // 録音（ScriptProcessor: iOS Safari 互換）
   const chunksArr=[]; src=actx.createMediaStreamSource(stream); proc=actx.createScriptProcessor(4096,1,1);
   proc.onaudioprocess=e=>chunksArr.push(new Float32Array(e.inputBuffer.getChannelData(0)));
   src.connect(proc); proc.connect(actx.destination);
-  // VAD
   const an=actx.createAnalyser(); an.fftSize=1024; src.connect(an); const buf=new Float32Array(an.fftSize);
-  const refMs=(ch.t.at(-1)[2]-ch.t[0][1])*1000, maxMs=Math.min(15000, refMs*2.5+2000);
+  const refMs=(S.t.at(-1)[2]-S.t[0][1])*1000, maxMs=Math.min(15000, refMs*2.5+ (stepOf(cur().id).n===5?4000:2000));
   let speaking=false, lastVoice=0, ended=false;
   // 電車内などの騒音対策: 録音開始から300msの環境音RMSを測り、閾値を環境音の2.5倍（下限 VAD_TH）に自動調整
   let th=VAD_TH, calN=0, calSum=0; const CAL_MS=300;
@@ -247,28 +295,30 @@ function startRecording(){
     if (now-t0>=maxMs) finish(); },20);
   waveTimer=setInterval(()=>{ S.userWave.push(S.level); drawWave(); },50);
 }
-function onRecorded(samples, sr){
-  const ch = CHUNKS[S.order[S.idx]];
+async function onRecorded(samples, sr){
+  const ch = cur(), st = stepOf(ch.id);
   S.phase="scoring"; render();
-  const r = scoreDemo(samples, sr, ch);
-  const st = step(prog(ch.id), r.overall); store.set("progress",progress);
-  r.stageBefore=st.before; r.stageAfter=st.after; r.reaction = speechStart? Math.round(speechStart-t0) : null;
-  S.result=r; S.detail=r.words;
-  S.combo = r.overall>=80 ? S.combo+1 : 0; S.comboMax=Math.max(S.comboMax,S.combo);
-  tone(r.overall>=90?880:r.overall>=80?660:330, r.overall>=80?.15:.08);
+  const r = scoreDemo(samples, sr, S.t);
+  r.reaction = speechStart? Math.round(speechStart-t0) : null;
+  const u = stepUpdate(prog(ch.id), r.overall, r.reaction); store.set("cur_progress",progress);
+  r.stepBefore=u.before; r.stepAfter=u.after; r.ok=u.ok;
+  S.result=r; S.detail=r.words; S.reveal=true;                 // 結果では必ず英文と意味を見せる
+  S.combo = u.ok ? S.combo+1 : 0; S.comboMax=Math.max(S.comboMax,S.combo);
+  tone(r.overall>=90?880:u.ok?660:330, u.ok?.15:.08);
   S.phase="result"; render();
-  setTimeout(next, 1000);
+  if (st.n>=4 || !u.ok){ await speak(ch.en, 1.0); }           // 見ないで／状況即答／不合格時はお手本をもう一度
+  setTimeout(next, st.n>=4||!u.ok ? 400 : 1000);
 }
 async function next(){
-  if (S.idx+1>=S.order.length){ finishSession(); return; }
-  S.idx++; await playRef();
+  if (S.idx+1>=S.list.length){ finishSession(); return; }
+  S.idx++; await startItem();
 }
 function finishSession(){ clearInterval(timer); clearInterval(vadTimer); clearInterval(waveTimer); speechSynthesis.cancel(); S.phase="finished"; render(); }
 
 // ==================== 起動 ====================
 (function boot(){
   if (!navigator.mediaDevices?.getUserMedia){ S.phase="error"; S.err="このブラウザはマイクに対応していません。Safari または Chrome で https のURLから開いてください。"; render(); return; }
-  // iOS は getUserMedia にユーザー操作が必須のため、許可済みでも「有効にする」ボタン1回から始める
+  if (!window.CURRICULUM){ S.phase="error"; S.err="curriculum.js が読み込めませんでした。"; render(); return; }
   S.phase="permission"; render();
   speechSynthesis.onvoiceschanged = ()=>speechSynthesis.getVoices();
 })();
