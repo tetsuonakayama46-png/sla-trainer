@@ -81,9 +81,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.5"></script>
+<script src="curriculum.js?v=2026.11.15.7"></script>
 <script>
-const APP_VERSION = "2026.11.15.5";
+const APP_VERSION = "2026.11.15.7";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -109,7 +109,7 @@ function prog(id){ return progress[id] ??= {step:1, pass:0, fail:0, n:0, last:0,
 function stepOf(id){ return STEPS[Math.min(5,Math.max(1,prog(id).step))-1]; }
 
 // ==================== 週の判定（日数＋前週の達成率でゲート） ====================
-function weekDone(week){ const its=ITEMS.filter(i=>i.week===week); if(!its.length) return true; return its.filter(i=>prog(i.id).step>=3).length/its.length >= WEEK_GATE; }
+function weekDone(week){ if (week===0) return true; const its=ITEMS.filter(i=>i.week===week); if(!its.length) return true; return its.filter(i=>prog(i.id).step>=3).length/its.length >= WEEK_GATE; }
 function currentWeek(){
   const days = startDate ? Math.floor((Date.now()-startDate)/864e5) : 0;
   const byDays = Math.min(12, Math.floor(days/7)+1);
@@ -239,6 +239,7 @@ function render(){
       <div class="wk">Week ${S.week} / 12 ・ フェーズ${ph.id} ${esc(ph.name)}</div>
       <h1>${esc(wk.title)}</h1>
       <p class="goal">${esc(ph.goal)}</p>
+      ${ITEMS.some(i=>i.week===0&&prog(i.id).step<3)?`<p class="goal" style="color:var(--warn)">旅行 優先パック（空港・機内・ホテル・買い物・レストラン）を先に出しています：${ITEMS.filter(i=>i.week===0&&prog(i.id).step>=3).length}/${ITEMS.filter(i=>i.week===0).length}文</p>`:""}
       <div class="plan"><div><b>${S.plan.news}</b><span>新しい文</span></div><div><b>${S.plan.review}</b><span>復習</span></div><div><b>${streak.days}</b><span>連続日</span></div></div>
       <div class="bar"><i style="width:${pct}%"></i></div>
       <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
@@ -264,7 +265,7 @@ function render(){
       html += `<div class="ph">フェーズ${ph.id} ${esc(ph.name)} ・ ${esc(ph.goal)}</div>`;
       for (const w of CUR.weeks.filter(w=>w.phase===ph.id)){
         const pct=weekPct(w.week), cls = w.week===nowW?"now": pct>=70?"done":"";
-        html += `<div class="wkrow ${cls}" data-w="${w.week}"><span class="n">W${w.week}</span><span class="t">${esc(w.title)}<small>${w.items.length}文 ・ 着手 ${weekTouched(w.week)}文</small></span>${w.week===nowW?`<span class="tag">今ここ</span>`:""}<span class="pct">${pct}%</span></div>`;
+        html += `<div class="wkrow ${cls}" data-w="${w.week}"><span class="n">${w.week===0?"旅行":"W"+w.week}</span><span class="t">${esc(w.title)}<small>${w.items.length}文 ・ 着手 ${weekTouched(w.week)}文</small></span>${w.week===nowW?`<span class="tag">今ここ</span>`:w.week===0&&pct<70?`<span class="tag" style="background:var(--warn);color:#000">優先</span>`:""}<span class="pct">${pct}%</span></div>`;
         if (w.week===open){
           html += `<div class="items">` + w.items.map(it=>{ const pr=prog(it.id); const st=pr.n? pr.step : 0;
             return `<div class="it"><span class="dots">${[1,2,3,4,5].map(k=>`<i class="${k<st?"on":k===st?"here":""}"></i>`).join("")}</span><span class="en">${esc(it.en)}</span><span class="jp">${esc(it.jp)}</span></div>`; }).join("") + `</div>`;
