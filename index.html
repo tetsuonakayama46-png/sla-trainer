@@ -82,9 +82,9 @@
 </head>
 <body>
 <div id="app"></div>
-<script src="curriculum.js?v=2026.11.15.14"></script>
+<script src="curriculum.js?v=2026.11.17.1"></script>
 <script>
-const APP_VERSION = "2026.11.15.14";
+const APP_VERSION = "2026.11.17.1";
 // 自動更新: 古いキャッシュ（ホーム画面アプリ等）を検知したら、クエリを変えて読み直す
 (async()=>{ try{ const r=await fetch("version.json?t="+Date.now(),{cache:"no-store"}); const j=await r.json();
   if (j.version && j.version!==APP_VERSION && !location.search.includes("v="+j.version)) location.replace(location.pathname+"?v="+j.version); }catch{} })();
@@ -344,13 +344,81 @@ function render(){
       <div class="small">全${op.total}文中 ${op.mid}文が「ひとりで」以上（${pct}%）・${op.done}文が「状況で即答」到達</div>
       <button class="btn" id="go">はじめる（約5分）</button>
       <button class="btn ghost" id="showcur" style="margin-top:6px">カリキュラム全体と進捗を見る</button>
+      <button class="btn ghost" id="showhelp" style="margin-top:6px">📖 使い方・採点のしくみ</button>
       <div class="small">ステップ: 意味＋ゆっくり → いっしょに → ひとりで → 見ないで → 状況で即答</div>
       <div class="small">採点: ${getKey()?"音声認識":"デモ（<a id=\"openset\" style=\"color:var(--native)\">設定でキーを入れる</a>）"} ・ 音声: ${getKey()&&NATIVE()?"ネイティブ":"端末"} ・ v${APP_VERSION} ・ <a id="openset2" style="color:var(--muted);text-decoration:underline">設定</a></div>
     </div>`));
     document.getElementById("go").onclick = ()=>{ S.phase="ready"; render(); app.onpointerdown=onFirstTap; };
     document.getElementById("showcur").onclick=()=>{ S.openWeek=null; S.phase="curriculum"; render(); };
+    document.getElementById("showhelp").onclick=()=>{ S.phase="help"; render(); };
     for (const a of document.querySelectorAll(".swp")) a.onclick=()=>{ switchProfile(a.dataset.p); startSession(); };
     for (const id of ["openset","openset2"]){ const a=document.getElementById(id); if(a) a.onclick=()=>{ S.phase="settings"; render(); }; }
+    return;
+  }
+  if (S.phase==="help"){
+    const c=COURSE();
+    app.replaceChildren(el(`<div class="cur">
+      <button class="btn ghost" id="back" style="margin:0 0 10px;padding:8px 14px">← 戻る</button>
+      <h1>使い方・採点のしくみ</h1>
+      <div class="legend">いま: ${esc(P().name)} ・ ${esc(c.name)}（${esc(c.desc)}）</div>
+
+      <div class="ph">1. 1回のセッション（約5分）</div>
+      <div class="legend">「はじめる」→ 画面をタップで開始。<b>新しい文 ${NEW_PER_DAY}つ（各2回）＋復習 ${REVIEW_PER_DAY}文</b>が出ます。タイマー（上の青い線）は再生・録音・採点中だけ減ります。結果画面では止まるので、考える時間は自由です。<br>
+      復習に出るのは「途中の文」と「到達済みでも3日以上触っていない文」。到達した文も忘れないよう戻ってきます。</div>
+
+      <div class="ph">2. 1文の流れとボタン</div>
+      <div class="legend">
+      ① お手本が流れる（ステップ5は流れない）→ ② 自動で録音開始「話して！」→ ③ 0.7秒黙ると録音終了 → ④ 採点 → ⑤ 結果画面で<b>止まる</b>（自動では進みません）<br>
+      <b>🔊 お手本</b>＝録音を捨ててもう一度聞く（何度でも、減点なし）／<b>■ 止める</b>＝再生・録音を中断して待機／<b>↻ 再録</b>＝同じ文をやり直す／<b>次へ ▶</b>＝次の文へ／<b>✕</b>＝セッション終了<br>
+      「設定 → 自動で次へ進む」をONにすると結果のあと自動で進みます（既定OFF）。</div>
+
+      <div class="ph">3. 5つのステップと上がり方・下がり方</div>
+      <div class="legend">
+      ${STEPS.map(st=>`<b>Step ${st.n} ${esc(st.name)}</b>（お手本${st.playFirst?st.rate+"倍速":"なし"}・英文${st.showEn?"表示":"非表示"}・日本語${st.showJp?"表示":"非表示"}・合格 ${st.pass}点）: ${esc(st.hint)}`).join("<br>")}<br><br>
+      ・<b>2回連続で合格 → 次のステップへ</b>（1回合格のあと不合格だと数え直し）<br>
+      ・<b>2回連続で不合格 → 1つ前のステップへ戻る</b>（Step1より下には下がらない）<br>
+      ・Step 5は「言い始めるまで3秒以内」も条件。遅いと不合格<br>
+      ・結果画面の5つの丸＝今のステップ。「ひとりで（Step3）」以上になると、その文は<b>到達</b>扱い（進捗%の分子）。</div>
+
+      <div class="ph">4. 週・フェーズの繰り上がり</div>
+      <div class="legend">
+      週は「開始日からの日数（7日で1週）」で進みますが、<b>前の週の文の${Math.round(WEEK_GATE*100)}%が「ひとりで」以上</b>になるまで次の週へは進みません（できるまで復習週）。<br>
+      逆に、日数が足りなくても早くは進みません。1日1セッションで毎日やるのが一番早い進み方です。<br>
+      フェーズは週のまとまり（${c.name}の順: ${ORDER().map(w=>w===0?"旅行":"W"+w).join(" → ")}）。カリキュラム画面で、今いる週に「今ここ」が付きます。</div>
+
+      <div class="ph">5. 棒グラフの見方（上＝NATIVE 青、下＝YOU 緑）</div>
+      <div class="legend">
+      横軸は時間。<b>上の青</b>＝お手本の「音の出る区間の目安」（単語の長さから作ったリズムで、実際の音声波形ではありません）。<b>下の緑</b>＝あなたの声の大きさの推移。右端の黄色＝いま入っている音量。<br>
+      見るポイントは <b>長さ</b>（青と緑の横幅がそろっているか）と <b>切れ目</b>（単語の区切りで緑が凹んでいるか）。緑が青より極端に短い＝速すぎ／言い切れていない、長い＝詰まっている。</div>
+
+      <div class="ph">6. 点数とコンボ：どうすれば100になるか</div>
+      <div class="legend">
+      <b>音声認識モード</b>（キーあり）の点数 ＝ <b>単語の一致 85点</b> ＋ <b>長さの一致 15点</b> − 余計な単語×5点<br>
+      ・単語の一致：お手本の各単語が認識結果に含まれていれば加点。全部言えれば85点<br>
+      ・長さ：お手本と同じくらいの長さで言えるほど満点に近づく（±10%以内でほぼ満点、2倍や半分だと0）<br>
+      ・言い直しや「えー」は「余計な単語」になって減点 → <b>一息で、お手本と同じ速さで、言い切る</b>のが100への道。90点台が出れば十分合格です<br>
+      <b>コンボ</b>＝セッション内で<b>連続して合格</b>した回数（不合格で0に戻る）。セッション終了画面の「最大コンボ」はその日の最高記録。点数とは別物です。</div>
+
+      <div class="ph">7. 「デモ採点」と出る理由</div>
+      <div class="legend">
+      デモ採点＝<b>声の長さと音量だけ</b>で点を出す簡易モード。単語は見ていません。<br>
+      出る理由は2つ：① このブラウザにOpenAIキーが保存されていない（設定で保存。キーは端末ごと・ブラウザごと）／② キーはあるが音声認識に失敗した（圏外・残高切れ・キー無効など）。②の場合は結果画面に失敗理由が出ます。<br>
+      結果画面の「聞こえた: …」が音声認識の結果。ここが空なら声が届いていません（マイク許可・距離・騒音を確認）。</div>
+
+      <div class="ph">8. 2人で使う・コース</div>
+      <div class="legend">
+      メニュー上部の名前をタップで「使う人」を切替。進捗・開始日・連続日・コースは人ごと、OpenAIキーと音声設定は端末共通。<br>
+      <b>初心者コース</b>＝音の土台から12週、最後に旅行パック（Step1から）／<b>実践コース</b>＝旅行パック50文を先に、その後 英借文・状況で即答（Step3から・基礎週は省略）。設定でいつでも変更でき、進捗は消えません。</div>
+
+      <div class="ph">9. 困ったとき</div>
+      <div class="legend">
+      ・音が出ない／雑音 → 設定「🔊 音声テスト」。結果の文言で原因が分かります<br>
+      ・画面が古い → ブラウザを閉じて開き直す（自動更新）。URL末尾に ?v=1 を付けても可<br>
+      ・録音が始まらない → 「🎙 録音する」ボタンを押す。出ない場合はSafariのマイク許可を確認<br>
+      ・別のブラウザで開くと進捗もキーも別になります。いつも同じブラウザで</div>
+      <button class="btn ghost" id="back2">戻る</button>
+    </div>`));
+    document.getElementById("back").onclick=document.getElementById("back2").onclick=()=>{ S.phase="menu"; render(); };
     return;
   }
   if (S.phase==="curriculum"){
@@ -484,6 +552,7 @@ function overlayHtml(){
   const r=S.result, c = r.ok?"var(--good)":"var(--bad)";
   return `<div class="overlay ${r.ok?"flash":""}"><div class="n" style="color:${c}">${r.overall}</div>
     <div class="sub"><span>${r.ok?"合格":"もう一回"}</span><span>Timing ±${r.timing}ms</span>${r.reaction!=null?`<span>反応 ${(r.reaction/1000).toFixed(1)}s</span>`:""}<span style="color:${r.engine==="asr"?"var(--good)":"var(--warn)"}">${r.engine==="asr"?"音声認識":"デモ採点"}</span></div>
+    ${r.engine!=="asr"?`<div class="sub" style="font-size:13px;color:var(--warn)">${getKey()?"音声認識に失敗したためデモ採点: "+esc(S.asrErr||"不明"):"キー未設定のためデモ採点（設定で保存）"}</div>`:""}
     ${r.engine==="asr"?`<div class="sub" style="font-size:15px;color:#fff">聞こえた: ${esc(r.heard||"（無音）")}</div>`:""}
     ${S.combo>=2?`<div class="combo">${S.combo} COMBO!</div>`:""}
     ${r.stepAfter>r.stepBefore?`<div class="stage">Step ${r.stepBefore} → ${r.stepAfter} ${esc(STEPS[r.stepAfter-1].name)}</div>`:r.stepAfter<r.stepBefore?`<div class="stage" style="background:var(--bad)">Step ${r.stepBefore} → ${r.stepAfter} に戻ってやり直し</div>`:""}</div>`;
